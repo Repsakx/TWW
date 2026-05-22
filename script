@@ -1,0 +1,676 @@
+print("[ESP] Starting...")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local Camera = workspace.CurrentCamera
+local LocalPlayer = Players.LocalPlayer
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+-------------------------------------------------
+-- ESP CORE
+-------------------------------------------------
+
+local ESPContainer = Instance.new("Folder")
+ESPContainer.Name = "ESPContainer"
+ESPContainer.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+local SELECTION_BOX_CONTAINER = Instance.new("Folder")
+SELECTION_BOX_CONTAINER.Name = "SelectionBoxContainer"
+SELECTION_BOX_CONTAINER.Parent = workspace
+
+local SETTINGS = {
+    Enabled              = false,
+    PlayerESP            = false,
+    PlayerName           = true,
+    PlayerSelectBox      = false,
+    NPCESP               = false,
+    NPCName              = true,
+    NPCSelectBox         = false,
+    AnimalESP            = false,
+    AnimalName           = true,
+    AnimalSelectBox      = false,
+    OreESP               = false,
+    OreName              = true,
+    OreSelectBox         = false,
+    TreeESP              = false,
+    TreeName             = true,
+    TreeSelectBox        = false,
+    DroppedItemsESP      = false,
+    DroppedItemsName     = true,
+    DroppedItemsSelectBox = false,
+    MaxDistance          = 3000,
+    ESPColor             = Color3.fromRGB(255, 255, 255),
+    SelectBoxLineThickness = 0.05,
+    SelectBoxSurfaceTransparency = 0.7,
+
+    -- Weather / Misc
+    FogEnabled   = false,
+    RainPercent  = 0,
+    WindPower    = 0,
+    IsBloodMoon  = false,
+    TimeSpeed    = 1,
+    ClapSpeed    = 3,
+}
+
+local CACHE = {}               -- BillboardGui (nazwy)
+local SELECTION_BOX_CACHE = {} -- SelectionBox (3D)
+
+local function ClearESP()
+    for _, v in pairs(CACHE) do
+        if v and v.Parent then v:Destroy() end
+    end
+    table.clear(CACHE)
+    for _, sb in pairs(SELECTION_BOX_CACHE) do
+        if sb and sb.Parent then sb:Destroy() end
+    end
+    table.clear(SELECTION_BOX_CACHE)
+    table.clear(TrackedTargets)
+
+    local oldEsp = LocalPlayer.PlayerGui:FindFirstChild("ESPContainer")
+    if oldEsp then oldEsp:Destroy() end
+    local oldSelBox = workspace:FindFirstChild("SelectionBoxContainer")
+    if oldSelBox then oldSelBox:Destroy() end
+
+    ESPContainer = Instance.new("Folder")
+    ESPContainer.Name = "ESPContainer"
+    ESPContainer.Parent = LocalPlayer.PlayerGui
+    SELECTION_BOX_CONTAINER = Instance.new("Folder")
+    SELECTION_BOX_CONTAINER.Name = "SelectionBoxContainer"
+    SELECTION_BOX_CONTAINER.Parent = workspace
+end
+
+-- Kolory drużyn
+local TEAM_COLORS = {
+    ["Citizens"] = Color3.fromRGB(0, 255, 0),
+    ["Lawmen"]   = Color3.fromRGB(0, 170, 255),
+    ["Outlaws"]  = Color3.fromRGB(255, 0, 0),
+}
+
+local function GetPlayerColor(plr)
+    if plr and plr.Team then
+        return TEAM_COLORS[plr.Team.Name] or SETTINGS.ESPColor
+    end
+    return SETTINGS.ESPColor
+end
+
+local function GetOreColor(model)
+    local ore = model:FindFirstChild("RockOre", true)
+    if ore and ore:IsA("BasePart") then return ore.Color end
+    return Color3.fromRGB(100, 200, 255)
+end
+
+local function GetTreeColor(model)
+    local leaves = model:FindFirstChild("Leaves", true) or model:FindFirstChild("JungleTree01_Leaves", true)
+    if leaves and leaves:IsA("BasePart") then return leaves.Color end
+    local trunk = model:FindFirstChild("Trunk", true)
+    if trunk and trunk:IsA("BasePart") then return trunk.Color end
+    return Color3.fromRGB(0, 200, 50)
+end
+
+local function GetAnimalColor(model)
+    local body = model:FindFirstChild("Body", true)
+    if body and body:IsA("BasePart") then return body.Color end
+    return Color3.fromRGB(255, 170, 0)
+end
+
+local function GetDroppedItemColor(item)
+    -- dla uproszczenia biały, można dostosować
+    return Color3.fromRGB(255, 255, 0)
+end
+
+local function FindBestTargetPart(model)
+    if not model then return nil end
+    if model:IsA("BasePart") then return model end
+    if model:IsA("Model") and model.PrimaryPart then return model.PrimaryPart end
+    local hrp = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("HumanoidRootPart", true)
+    if hrp and hrp:IsA("BasePart") then return hrp end
+    local body = model:FindFirstChild("Body") or model:FindFirstChild("Body", true)
+    if body and body:IsA("BasePart") then return body end
+    for _, part in pairs(model:GetDescendants()) do
+        if part:IsA("BasePart") then return part end
+    end
+    return nil
+end
+
+local function CreateESP(part, text, color)
+    local bb = Instance.new("BillboardGui")
+    bb.AlwaysOnTop = true
+    bb.Size = UDim2.new(0, 200, 0, 30)
+    bb.StudsOffset = Vector3.new(0, 2.5, 0)
+    bb.Adornee = part
+    bb.Parent = ESPContainer
+
+    local lbl = Instance.new("TextLabel")
+    lbl.BackgroundTransparency = 1
+    lbl.Size = UDim2.new(1, 0, 1, 0)
+    lbl.Font = Enum.Font.GothamBold
+    lbl.TextScaled = false
+    lbl.TextSize = 11
+    lbl.TextStrokeTransparency = 0.25
+    lbl.TextStrokeColor3 = Color3.new(0, 0, 0)
+    lbl.TextColor3 = color
+    lbl.Text = text
+    lbl.Parent = bb
+
+    return bb, lbl
+end
+
+-- Select Box (3D)
+local function CreateSelectionBox(adornee, color)
+    if not adornee then return nil end
+    local sb = Instance.new("SelectionBox")
+    sb.Name = "ESP_SelectBox"
+    sb.Adornee = adornee
+    sb.Color3 = color
+    sb.LineThickness = SETTINGS.SelectBoxLineThickness
+    sb.SurfaceColor3 = color
+    sb.SurfaceTransparency = SETTINGS.SelectBoxSurfaceTransparency
+    sb.Visible = true
+    sb.Parent = SELECTION_BOX_CONTAINER
+    return sb
+end
+
+local function UpdateSelectionBox(sb, color)
+    if not sb then return end
+    sb.Color3 = color
+    sb.SurfaceColor3 = color
+    sb.LineThickness = SETTINGS.SelectBoxLineThickness
+    sb.SurfaceTransparency = SETTINGS.SelectBoxSurfaceTransparency
+    sb.Visible = true
+end
+
+-------------------------------------------------
+-- CACHING & BACKGROUND SCANNING
+-------------------------------------------------
+
+local TrackedTargets = {}
+
+local function ScanEntities()
+    local activeKeys = {}
+
+    -- Gracze
+    if SETTINGS.PlayerESP then
+        local pf = workspace:FindFirstChild("WORKSPACE_Entities") and workspace.WORKSPACE_Entities:FindFirstChild("Players")
+        if pf then
+            for _, char in pairs(pf:GetChildren()) do
+                local hrp = char:FindFirstChild("HumanoidRootPart")
+                if hrp then
+                    local key = "PLAYER_" .. char.Name
+                    activeKeys[key] = true
+                    local plr = Players:FindFirstChild(char.Name)
+                    TrackedTargets[key] = { Part = hrp, Color = GetPlayerColor(plr), Prefix = char.Name, Type = "Player", Model = char }
+                end
+            end
+        end
+    end
+
+    -- NPC
+    if SETTINGS.NPCESP then
+        local nf = workspace:FindFirstChild("WORKSPACE_Entities") and workspace.WORKSPACE_Entities:FindFirstChild("NPCs")
+        if nf then
+            for _, npc in pairs(nf:GetChildren()) do
+                local model = npc:FindFirstChild("Model")
+                local hrp = model and model:FindFirstChild("HumanoidRootPart", true)
+                if hrp then
+                    local key = "NPC_" .. npc.Name
+                    activeKeys[key] = true
+                    TrackedTargets[key] = { Part = hrp, Color = Color3.fromRGB(255, 255, 0), Prefix = npc.Name, Type = "NPC", Model = model or npc }
+                end
+            end
+        end
+    end
+
+    -- Zwierzęta
+    if SETTINGS.AnimalESP then
+        local af = workspace:FindFirstChild("WORKSPACE_Entities") and workspace.WORKSPACE_Entities:FindFirstChild("Animals")
+        if af then
+            for _, animal in pairs(af:GetChildren()) do
+                local bestPart = FindBestTargetPart(animal)
+                if bestPart then
+                    local key = "ANIMAL_" .. animal:GetDebugId()
+                    activeKeys[key] = true
+                    local health = animal:FindFirstChild("Health") and animal.Health.Value or "?"
+                    local anger = animal:FindFirstChild("Anger") and animal.Anger.Value or "?"
+                    local prefix = string.format("%s [HP:%s] [Anger:%s]", animal.Name, tostring(health), tostring(anger))
+                    TrackedTargets[key] = { Part = bestPart, Color = GetAnimalColor(animal), Prefix = prefix, Type = "Animal", Model = animal }
+                end
+            end
+        end
+    end
+
+    -- Rudy
+    if SETTINGS.OreESP then
+        local mining = workspace:FindFirstChild("WORKSPACE_Interactables") and workspace.WORKSPACE_Interactables:FindFirstChild("Mining")
+        local of = mining and mining:FindFirstChild("OreDeposits")
+        if of then
+            for _, oreType in pairs(of:GetChildren()) do
+                for _, deposit in pairs(oreType:GetChildren()) do
+                    local rock = deposit:FindFirstChild("RockOre", true)
+                    if rock and rock:IsA("BasePart") then
+                        local info = deposit:FindFirstChild("DepositInfo")
+                        local progress = info and info:FindFirstChild("Progress") and info.Progress.Value or "?"
+                        local maxHealth = info and info:FindFirstChild("MaxHealth") and info.MaxHealth.Value or "?"
+                        local remaining = tostring(progress) .. "/" .. tostring(maxHealth)
+                        local key = "ORE_" .. deposit:GetDebugId()
+                        activeKeys[key] = true
+                        TrackedTargets[key] = { Part = rock, Color = GetOreColor(deposit), Prefix = oreType.Name .. " (" .. remaining .. ")", Type = "Ore", Model = deposit }
+                    end
+                end
+            end
+        end
+    end
+
+    -- Drzewa
+    if SETTINGS.TreeESP then
+        local geo = workspace:FindFirstChild("WORKSPACE_Geometry")
+        if geo then
+            for _, region in pairs(geo:GetChildren()) do
+                local trees = region:FindFirstChild("Trees")
+                if trees then
+                    for _, tree in pairs(trees:GetChildren()) do
+                        local treeInfo = tree:FindFirstChild("TreeInfo")
+                        if treeInfo and treeInfo:FindFirstChild("Alive") and treeInfo.Alive.Value == true then
+                            local part = tree:FindFirstChild("Leaves", true) or tree:FindFirstChild("JungleTree01_Leaves", true) or tree:FindFirstChild("Trunk", true)
+                            if part and part:IsA("BasePart") then
+                                local hp = treeInfo:FindFirstChild("Health")
+                                local health = hp and tostring(hp.Value) or "?"
+                                local key = "TREE_" .. tree:GetDebugId()
+                                activeKeys[key] = true
+                                TrackedTargets[key] = { Part = part, Color = GetTreeColor(tree), Prefix = tree.Name .. " (HP: " .. health .. ")", Type = "Tree", Model = tree }
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- Porzucone przedmioty
+    if SETTINGS.DroppedItemsESP then
+        local di = workspace:FindFirstChild("WORKSPACE_Interactables") and workspace.WORKSPACE_Interactables:FindFirstChild("DroppedItems")
+        if di then
+            for _, item in pairs(di:GetChildren()) do
+                local bestPart = FindBestTargetPart(item)
+                if bestPart then
+                    local key = "ITEM_" .. item:GetDebugId()
+                    activeKeys[key] = true
+                    TrackedTargets[key] = { Part = bestPart, Color = GetDroppedItemColor(item), Prefix = item.Name, Type = "DroppedItem", Model = item }
+                end
+            end
+        end
+    end
+
+    -- Usuwanie starych wpisów
+    for key, _ in pairs(TrackedTargets) do
+        if not activeKeys[key] then
+            if CACHE[key] then CACHE[key]:Destroy(); CACHE[key] = nil end
+            if SELECTION_BOX_CACHE[key] then SELECTION_BOX_CACHE[key]:Destroy(); SELECTION_BOX_CACHE[key] = nil end
+            TrackedTargets[key] = nil
+        end
+    end
+end
+
+local ScannerLoop = task.spawn(function()
+    while task.wait(1.5) do
+        if SETTINGS.Enabled then pcall(ScanEntities) end
+    end
+end)
+
+local RenderLoop = RunService.RenderStepped:Connect(function()
+    if not SETTINGS.Enabled then return end
+
+    for key, target in pairs(TrackedTargets) do
+        local typeEnabled = false
+        local showName = false
+        local drawSelectBox = false
+
+        if target.Type == "Player" and SETTINGS.PlayerESP then
+            typeEnabled = true
+            showName = SETTINGS.PlayerName
+            drawSelectBox = SETTINGS.PlayerSelectBox
+        elseif target.Type == "NPC" and SETTINGS.NPCESP then
+            typeEnabled = true
+            showName = SETTINGS.NPCName
+            drawSelectBox = SETTINGS.NPCSelectBox
+        elseif target.Type == "Animal" and SETTINGS.AnimalESP then
+            typeEnabled = true
+            showName = SETTINGS.AnimalName
+            drawSelectBox = SETTINGS.AnimalSelectBox
+        elseif target.Type == "Ore" and SETTINGS.OreESP then
+            typeEnabled = true
+            showName = SETTINGS.OreName
+            drawSelectBox = SETTINGS.OreSelectBox
+        elseif target.Type == "Tree" and SETTINGS.TreeESP then
+            typeEnabled = true
+            showName = SETTINGS.TreeName
+            drawSelectBox = SETTINGS.TreeSelectBox
+        elseif target.Type == "DroppedItem" and SETTINGS.DroppedItemsESP then
+            typeEnabled = true
+            showName = SETTINGS.DroppedItemsName
+            drawSelectBox = SETTINGS.DroppedItemsSelectBox
+        end
+
+        if not typeEnabled or not target.Part or not target.Part.Parent then
+            if CACHE[key] then CACHE[key]:Destroy(); CACHE[key] = nil end
+            if SELECTION_BOX_CACHE[key] then SELECTION_BOX_CACHE[key].Visible = false end
+            continue
+        end
+
+        local dist = math.floor((Camera.CFrame.Position - target.Part.Position).Magnitude)
+        local inRange = dist <= SETTINGS.MaxDistance
+
+        -- Nazwa
+        if inRange and showName then
+            local text = target.Prefix .. " [" .. dist .. "m]"
+            if not CACHE[key] then
+                CACHE[key] = CreateESP(target.Part, text, target.Color)
+            else
+                local lbl = CACHE[key]:FindFirstChildOfClass("TextLabel")
+                if lbl then lbl.Text = text; lbl.TextColor3 = target.Color end
+                CACHE[key].Enabled = true
+            end
+        else
+            if CACHE[key] then CACHE[key].Enabled = false end
+        end
+
+        -- Select Box (3D)
+        if inRange and drawSelectBox then
+            local adornee = target.Model or target.Part
+            if not SELECTION_BOX_CACHE[key] then
+                SELECTION_BOX_CACHE[key] = CreateSelectionBox(adornee, target.Color)
+            else
+                UpdateSelectionBox(SELECTION_BOX_CACHE[key], target.Color)
+                SELECTION_BOX_CACHE[key].Adornee = adornee
+            end
+        else
+            if SELECTION_BOX_CACHE[key] then
+                SELECTION_BOX_CACHE[key].Visible = false
+            end
+        end
+    end
+end)
+
+-------------------------------------------------
+-- WINDUI + ICONS
+-------------------------------------------------
+
+print("[ESP] Loading libraries...")
+local success1, Icons = pcall(function()
+    return loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/Icons/main/Main-v2.lua"))()
+end)
+if not success1 then warn("[ESP] Failed to load Icons library!") end
+
+local WindUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"))()
+print("[ESP] Libraries loaded, creating window...")
+
+local Window = WindUI:CreateWindow({
+    Title = "TWW",
+    Icon = "eye",
+    Folder = "TWW",
+    Size = UDim2.fromOffset(580, 500),
+    MinSize = Vector2.new(560, 400),
+    MaxSize = Vector2.new(850, 650),
+    ToggleKey = Enum.KeyCode.LeftAlt,
+    Resizable = true,
+    Theme = "Dark"
+})
+
+local function Notify(title, text, duration)
+    WindUI:Notify({ Title = title, Content = text, Duration = duration or 5, Icon = "check" })
+end
+
+-------------------------------------------------
+-- KONFIGURACJA
+-------------------------------------------------
+
+local function SaveConfig()
+    pcall(function()
+        if writefile then
+            makefolder("TWW")
+            local data = {}
+            for k, v in pairs(SETTINGS) do
+                if type(v) == "Color3" then
+                    data[k] = {v.R, v.G, v.B}
+                else
+                    data[k] = v
+                end
+            end
+            data.MenuKey = tostring(Window.ToggleKey)
+            writefile("TWW/ESPConfig.json", game:GetService("HttpService"):JSONEncode(data))
+        end
+    end)
+end
+
+local function LoadConfig()
+    pcall(function()
+        if readfile then
+            local raw = readfile("TWW/ESPConfig.json")
+            local data = game:GetService("HttpService"):JSONDecode(raw)
+            for k, v in pairs(data) do
+                if k == "ESPColor" or k:find("Color") then
+                    if type(v) == "table" and #v == 3 then
+                        SETTINGS[k] = Color3.new(v[1], v[2], v[3])
+                    end
+                elseif k == "MenuKey" then
+                    local ok, key = pcall(function() return Enum.KeyCode[v] end)
+                    if ok and key then Window:SetToggleKey(key) end
+                elseif SETTINGS[k] ~= nil then
+                    SETTINGS[k] = v
+                end
+            end
+        end
+    end)
+end
+
+LoadConfig()
+
+-------------------------------------------------
+-- TABS & ELEMENTY UI
+-------------------------------------------------
+
+print("[ESP] Building tabs...")
+
+local ESPTab = Window:Tab({ Title = "ESP", Icon = "eye" })
+
+-- Sekcja Główna
+local MainSection = ESPTab:Section({ Title = "Główne" })
+MainSection:Toggle({
+    Title = "Włącz ESP",
+    Value = SETTINGS.Enabled,
+    Callback = function(v)
+        SETTINGS.Enabled = v
+        if not v then ClearESP() end
+        SaveConfig()
+    end
+})
+MainSection:Slider({
+    Title = "Zasięg (m)",
+    Value = { Min = 100, Max = 5000, Default = SETTINGS.MaxDistance },
+    Step = 100,
+    Callback = function(v)
+        SETTINGS.MaxDistance = v
+        SaveConfig()
+    end
+})
+MainSection:Colorpicker({
+    Title = "Kolor ESP (gracze)",
+    Default = SETTINGS.ESPColor,
+    Callback = function(color)
+        SETTINGS.ESPColor = color
+        SaveConfig()
+    end
+})
+MainSection:Button({
+    Title = "Wyczyść Cache",
+    Callback = function() ClearESP() end
+})
+
+-- Opcje Select Boxa (globalne)
+MainSection:Slider({
+    Title = "Grubość linii Select Box",
+    Value = { Min = 0.01, Max = 1, Default = SETTINGS.SelectBoxLineThickness },
+    Step = 0.01,
+    Callback = function(v)
+        SETTINGS.SelectBoxLineThickness = v
+        SaveConfig()
+    end
+})
+MainSection:Slider({
+    Title = "Transparentność Select Box",
+    Value = { Min = 0, Max = 1, Default = SETTINGS.SelectBoxSurfaceTransparency },
+    Step = 0.05,
+    Callback = function(v)
+        SETTINGS.SelectBoxSurfaceTransparency = v
+        SaveConfig()
+    end
+})
+
+-- Sekcja Typy ESP
+local TypeSection = ESPTab:Section({ Title = "Typy ESP" })
+
+local function AddCategory(category, prefix)
+    local mainFlag = prefix .. "ESP"
+    local nameFlag = prefix .. "Name"
+    local selectFlag = prefix .. "SelectBox"
+
+    local mainToggle = TypeSection:Toggle({
+        Title = category,
+        Value = SETTINGS[mainFlag],
+        Callback = function(v)
+            SETTINGS[mainFlag] = v
+            SaveConfig()
+            nameToggle:SetVisible(v)
+            selectToggle:SetVisible(v)
+        end
+    })
+
+    local nameToggle = TypeSection:Toggle({
+        Title = "   Nazwa",
+        Value = SETTINGS[nameFlag],
+        Visible = SETTINGS[mainFlag],
+        Callback = function(v)
+            SETTINGS[nameFlag] = v
+            SaveConfig()
+        end
+    })
+    local selectToggle = TypeSection:Toggle({
+        Title = "   Select Box (3D)",
+        Value = SETTINGS[selectFlag],
+        Visible = SETTINGS[mainFlag],
+        Callback = function(v)
+            SETTINGS[selectFlag] = v
+            SaveConfig()
+        end
+    })
+end
+
+AddCategory("Gracze", "Player")
+AddCategory("NPCe", "NPC")
+AddCategory("Zwierzęta", "Animal")
+AddCategory("Rudy", "Ore")
+AddCategory("Drzewa", "Tree")
+AddCategory("Porzucone przedmioty", "DroppedItems")
+
+-- Zakładka Ustawienia
+local SettingsTab = Window:Tab({ Title = "Ustawienia", Icon = "settings" })
+local UISection = SettingsTab:Section({ Title = "UI" })
+UISection:Colorpicker({
+    Title = "Kolor akcentu",
+    Default = Color3.fromRGB(0, 120, 255),
+    Callback = function(color) WindUI:SetAccentColor(color) end
+})
+UISection:Dropdown({
+    Title = "Motyw",
+    Values = { "Default", "Dark Green", "Dark Blue", "Purple Rose", "Skeet" },
+    Value = "Default",
+    Callback = function(theme) WindUI:SetTheme(theme) end
+})
+UISection:Keybind({
+    Title = "Klawisz menu",
+    Value = tostring(Window.ToggleKey):match("%.(.+)") or "LeftAlt",
+    Callback = function(v)
+        Window:SetToggleKey(Enum.KeyCode[v])
+        SaveConfig()
+    end
+})
+UISection:Button({
+    Title = "Zniszcz Menu (Unload)",
+    Callback = function()
+        SETTINGS.Enabled = false
+        ClearESP()
+        if RenderLoop then RenderLoop:Disconnect() end
+        if ScannerLoop then task.cancel(ScannerLoop) end
+        pcall(function()
+            for _, obj in pairs(game:GetService("Lighting"):GetChildren()) do
+                if obj:IsA("BlurEffect") then obj:Destroy() end
+            end
+        end)
+        pcall(function() Window:Destroy() end)
+        print("[ESP] Unloaded successfully.")
+    end
+})
+
+-- Zakładka Misc (Pogoda)
+local MiscTab = Window:Tab({ Title = "Misc", Icon = "cloud" })
+local WeatherSection = MiscTab:Section({ Title = "Pogoda" })
+
+WeatherSection:Toggle({
+    Title = "Mgła (Fog)",
+    Value = SETTINGS.FogEnabled,
+    Callback = function(v)
+        SETTINGS.FogEnabled = v
+        ReplicatedStorage.GlobalWeather.FogEnabled.Value = v
+        SaveConfig()
+    end
+})
+WeatherSection:Slider({
+    Title = "Deszcz (%)",
+    Value = { Min = 0, Max = 1, Default = SETTINGS.RainPercent },
+    Step = 0.1,
+    Callback = function(v)
+        SETTINGS.RainPercent = v
+        ReplicatedStorage.GlobalWeather.RainPercent.Value = v
+        SaveConfig()
+    end
+})
+WeatherSection:Slider({
+    Title = "Wiatr (0-1)",
+    Value = { Min = 0, Max = 1, Default = SETTINGS.WindPower },
+    Step = 0.1,
+    Callback = function(v)
+        SETTINGS.WindPower = v
+        ReplicatedStorage.GlobalWeather.WindPower.Value = v
+        SaveConfig()
+    end
+})
+WeatherSection:Toggle({
+    Title = "Krwawy Księżyc",
+    Value = SETTINGS.IsBloodMoon,
+    Callback = function(v)
+        SETTINGS.IsBloodMoon = v
+        ReplicatedStorage.LightingSettings.IsBloodMoon.Value = v
+        SaveConfig()
+    end
+})
+WeatherSection:Slider({
+    Title = "Prędkość czasu (0-100)",
+    Value = { Min = 0, Max = 100, Default = SETTINGS.TimeSpeed },
+    Step = 1,
+    Callback = function(v)
+        SETTINGS.TimeSpeed = v
+        ReplicatedStorage.LightingSettings.TimeSpeed.Value = v
+        SaveConfig()
+    end
+})
+WeatherSection:Slider({
+    Title = "Szybkość klaskania (1-100)",
+    Value = { Min = 1, Max = 100, Default = SETTINGS.ClapSpeed },
+    Step = 1,
+    Callback = function(v)
+        SETTINGS.ClapSpeed = v
+        ReplicatedStorage.Params.Emotes.ClapSpeed.Value = v
+        SaveConfig()
+    end
+})
+
+print("[ESP] Script fully loaded.")
+Notify("TWW", "Załadowano! Otwórz menu: LeftAlt", 5)
