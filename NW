@@ -1,5 +1,5 @@
 --[[
-    UNIVERSAL ESP + AIMBOT (NOWA GRA) + WINDUI
+    UNIVERSAL ESP + AIMBOT + TRACERY + BOXY (NOWA GRA) + WINDUI
     Menu: Lewy Alt | Aimbot trigger: Prawy przycisk myszy
 --]]
 
@@ -13,11 +13,9 @@ local LocalPlayer = Players.LocalPlayer
 
 -- Sprawdzenie biblioteki Drawing
 local DrawingLib = nil
-pcall(function()
-    DrawingLib = Drawing
-end)
+pcall(function() DrawingLib = Drawing end)
 if not DrawingLib then
-    warn("[ESP] Drawing library not found - FOV circle will not be displayed")
+    warn("[ESP] Drawing library not found – FOV circle, tracery, boxy nie będą działać.")
 end
 
 -------------------------------------------------
@@ -43,6 +41,8 @@ local SETTINGS = {
     PlayerESP              = false,
     PlayerName             = true,
     PlayerSelectBox        = false,
+    PlayerTracers          = true,      -- linie od dołu ekranu
+    PlayerBox2D            = true,      -- pełny obrys 2D
 
     AnimalESP              = false,
     AnimalName             = true,
@@ -84,10 +84,9 @@ local SETTINGS = {
     AimbotEnabled          = false,
     AimbotFOV              = 200,
     AimbotMethod           = "Camera",   -- "Camera" lub "Mouse"
-    AimbotSensitivity      = 0.1,        -- nieużywane dla Camera (zostaje dla kompatybilności)
-    AimbotSmoothing        = 0.5,        -- szybkość obrotu kamery (0.15 = płynnie, 1 = natychmiast)
+    AimbotSmoothing        = 0.5,        -- płynność kamery (0.01 - 1)
+    AimbotMouseSens        = 3,          -- czułość myszy (1-10)
     AimbotTargetPart       = "Head",
-    AimbotTriggerKey       = "MouseButton2",
     AimbotToggle           = false,
     AimbotTeamCheck        = false,
     AimbotAliveCheck       = true,
@@ -96,19 +95,33 @@ local SETTINGS = {
     AimbotPredictionStr    = 0.065,
     AimbotStickyAim        = false,
     AimbotOverrideCamera   = true,
-    AimbotThirdPersonSens  = 3,          -- tylko dla metody Mouse
-    AimbotMouseFOV         = false,
-    AimbotThirdPerson      = false,      -- automatycznie ustawiane przez metodę
+    AimbotMouseFOV         = false,      -- FOV podąża za myszą
 }
 
-local CACHE = {}
-local SELECTION_BOX_CACHE = {}
+local CACHE = {}                -- BillboardGui (nazwy)
+local SELECTION_BOX_CACHE = {}  -- SelectionBox (3D)
+local TRACER_CACHE = {}         -- Drawing line (tracery)
+local BOX_CACHE = {}            -- Drawing lines (box 2D)
 
 local function ClearESP()
+    -- BillboardGui
     for _, v in pairs(CACHE) do if v and v.Parent then v:Destroy() end end
     table.clear(CACHE)
+
+    -- SelectionBox
     for _, sb in pairs(SELECTION_BOX_CACHE) do if sb and sb.Parent then sb:Destroy() end end
     table.clear(SELECTION_BOX_CACHE)
+
+    -- Tracery
+    for _, line in pairs(TRACER_CACHE) do if line then line:Remove() end end
+    table.clear(TRACER_CACHE)
+
+    -- Boxy 2D
+    for _, boxList in pairs(BOX_CACHE) do
+        for _, obj in ipairs(boxList) do if obj.Remove then obj:Remove() end end
+    end
+    table.clear(BOX_CACHE)
+
     table.clear(TrackedTargets)
 
     local old = LocalPlayer.PlayerGui:FindFirstChild("ESPContainer")
@@ -124,25 +137,21 @@ local function ClearESP()
     SELECTION_BOX_CONTAINER.Parent = workspace
 end
 
+-- Kolory, helpers
 local TEAM_COLORS = {
     ["Citizens"] = Color3.fromRGB(0, 255, 0),
     ["Lawmen"]   = Color3.fromRGB(0, 170, 255),
     ["Outlaws"]  = Color3.fromRGB(255, 0, 0),
 }
-
 local function GetPlayerColor(plr)
-    if plr and plr.Team then
-        return TEAM_COLORS[plr.Team.Name] or SETTINGS.ESPColor
-    end
+    if plr and plr.Team then return TEAM_COLORS[plr.Team.Name] or SETTINGS.ESPColor end
     return SETTINGS.ESPColor
 end
-
 local function GetAnimalColor(model)
     local body = model:FindFirstChild("Torso") or model:FindFirstChild("Body") or model:FindFirstChild("Head")
     if body and body:IsA("BasePart") then return body.Color end
     return Color3.fromRGB(255, 170, 0)
 end
-
 local function GetColorName(color)
     local r,g,b = math.floor(color.R*255), math.floor(color.G*255), math.floor(color.B*255)
     if r < 30 and g < 30 and b < 30 then return "Black"
@@ -160,20 +169,17 @@ local function GetColorName(color)
     elseif r < 100 and g > 180 and b > 180 then return "Cyan"
     else return "Unknown" end
 end
-
 local function GetTreeColor(model)
     local leaves = model:FindFirstChild("Leaves") or model:FindFirstChild("Leaf") or model:FindFirstChild("foliage")
     if leaves and leaves:IsA("BasePart") then return leaves.Color end
     return Color3.fromRGB(0, 200, 50)
 end
-
 local function GetOreColor(model)
     for _, child in pairs(model:GetChildren()) do
         if child:IsA("BasePart") and child.Name ~= "Ignore" then return child.Color end
     end
     return Color3.fromRGB(100, 200, 255)
 end
-
 local function FindBestTargetPart(model)
     if not model then return nil end
     if model:IsA("BasePart") then return model end
@@ -184,7 +190,6 @@ local function FindBestTargetPart(model)
     end
     return nil
 end
-
 local function CreateESP(part, text, color)
     local bb = Instance.new("BillboardGui")
     bb.AlwaysOnTop = true
@@ -192,7 +197,6 @@ local function CreateESP(part, text, color)
     bb.StudsOffset = Vector3.new(0, 2.5, 0)
     bb.Adornee = part
     bb.Parent = ESPContainer
-
     local lbl = Instance.new("TextLabel")
     lbl.BackgroundTransparency = 1
     lbl.Size = UDim2.new(1, 0, 1, 0)
@@ -206,8 +210,6 @@ local function CreateESP(part, text, color)
     lbl.Parent = bb
     return bb, lbl
 end
-
--- Select Box (3D)
 local function CreateSelectionBox(adornee, color)
     if not adornee then return nil end
     local sb = Instance.new("SelectionBox")
@@ -221,7 +223,6 @@ local function CreateSelectionBox(adornee, color)
     sb.Parent = SELECTION_BOX_CONTAINER
     return sb
 end
-
 local function UpdateSelectionBox(sb, color)
     if not sb then return end
     sb.Color3 = color
@@ -232,6 +233,123 @@ local function UpdateSelectionBox(sb, color)
 end
 
 -------------------------------------------------
+-- RYSOWANIE TRACERÓW I BOXÓW 2D (Drawing)
+-------------------------------------------------
+-- Tracery: linia od dołu ekranu do gracza
+local function createTracer(key, color)
+    if not DrawingLib then return end
+    local line = DrawingLib.new("Line")
+    line.Visible = false
+    line.Color = color
+    line.Thickness = 1.5
+    line.Transparency = 0.6
+    TRACER_CACHE[key] = line
+end
+
+-- Box 2D: pełny obrys (4 linie)
+local function createBox2D(key, color)
+    if not DrawingLib then return end
+    local lines = {}
+    for i=1,4 do
+        local line = DrawingLib.new("Line")
+        line.Visible = false
+        line.Color = color
+        line.Thickness = 1.5
+        table.insert(lines, line)
+    end
+    BOX_CACHE[key] = lines
+end
+
+local function updateBox2D(lines, topLeft, bottomRight, color)
+    if not lines or #lines < 4 then return end
+    local x1, y1 = topLeft.X, topLeft.Y
+    local x2, y2 = bottomRight.X, bottomRight.Y
+    local minX, maxX = math.min(x1, x2), math.max(x1, x2)
+    local minY, maxY = math.min(y1, y2), math.max(y1, y2)
+
+    -- Górna linia
+    lines[1].From = Vector2.new(minX, minY)
+    lines[1].To = Vector2.new(maxX, minY)
+    lines[1].Visible = true
+    lines[1].Color = color
+
+    -- Dolna linia
+    lines[2].From = Vector2.new(minX, maxY)
+    lines[2].To = Vector2.new(maxX, maxY)
+    lines[2].Visible = true
+    lines[2].Color = color
+
+    -- Lewa linia
+    lines[3].From = Vector2.new(minX, minY)
+    lines[3].To = Vector2.new(minX, maxY)
+    lines[3].Visible = true
+    lines[3].Color = color
+
+    -- Prawa linia
+    lines[4].From = Vector2.new(maxX, minY)
+    lines[4].To = Vector2.new(maxX, maxY)
+    lines[4].Visible = true
+    lines[4].Color = color
+end
+
+-- Pomocnicza funkcja do pobierania bounding boxa modelu w przestrzeni ekranu
+local function GetScreenBounds(model)
+    local corners = {}
+    if model:IsA("Model") then
+        local cf, size = model:GetBoundingBox()
+        local hx, hy, hz = size.X/2, size.Y/2, size.Z/2
+        -- 8 rogów w przestrzeni świata (CFrame jest zorientowany globalnie)
+        local offsets = {
+            Vector3.new(-hx, -hy, -hz), Vector3.new( hx, -hy, -hz),
+            Vector3.new(-hx,  hy, -hz), Vector3.new( hx,  hy, -hz),
+            Vector3.new(-hx, -hy,  hz), Vector3.new( hx, -hy,  hz),
+            Vector3.new(-hx,  hy,  hz), Vector3.new( hx,  hy,  hz)
+        }
+        for _, off in ipairs(offsets) do
+            local worldPos = cf:PointToWorldSpace(off)  -- użyj PointToWorldSpace dla przesunięcia
+            table.insert(corners, worldPos)
+        end
+    elseif model:IsA("BasePart") then
+        local cf, size = model.CFrame, model.Size
+        local hx, hy, hz = size.X/2, size.Y/2, size.Z/2
+        local offsets = {
+            Vector3.new(-hx, -hy, -hz), Vector3.new( hx, -hy, -hz),
+            Vector3.new(-hx,  hy, -hz), Vector3.new( hx,  hy, -hz),
+            Vector3.new(-hx, -hy,  hz), Vector3.new( hx, -hy,  hz),
+            Vector3.new(-hx,  hy,  hz), Vector3.new( hx,  hy,  hz)
+        }
+        for _, off in ipairs(offsets) do
+            local worldPos = cf:PointToWorldSpace(off)
+            table.insert(corners, worldPos)
+        end
+    else
+        return nil
+    end
+
+    local screenCorners = {}
+    for _, worldPos in ipairs(corners) do
+        local screenPos, onScreen = Camera:WorldToScreenPoint(worldPos)
+        if onScreen then
+            table.insert(screenCorners, Vector2.new(screenPos.X, screenPos.Y))
+        end
+    end
+
+    if #screenCorners < 2 then return nil end
+
+    local minX, minY = screenCorners[1].X, screenCorners[1].Y
+    local maxX, maxY = screenCorners[1].X, screenCorners[1].Y
+    for i=2, #screenCorners do
+        local v = screenCorners[i]
+        if v.X < minX then minX = v.X end
+        if v.X > maxX then maxX = v.X end
+        if v.Y < minY then minY = v.Y end
+        if v.Y > maxY then maxY = v.Y end
+    end
+
+    return Vector2.new(minX, minY), Vector2.new(maxX, maxY)
+end
+
+-------------------------------------------------
 -- CACHING & SCANNING
 -------------------------------------------------
 
@@ -239,8 +357,7 @@ local TrackedTargets = {}
 
 local function ScanEntities()
     local activeKeys = {}
-
-    -- GRACZE (zawsze skanowani, jeśli włączone ESP lub Aimbot)
+    -- GRACZE
     if SETTINGS.PlayerESP or SETTINGS.AimbotEnabled then
         local chars = workspace:FindFirstChild("Characters")
         if chars then
@@ -256,7 +373,6 @@ local function ScanEntities()
             end
         end
     end
-
     -- ZWIERZĘTA
     if SETTINGS.AnimalESP then
         local function scanAnimals(parent)
@@ -283,7 +399,6 @@ local function ScanEntities()
             if birds then scanAnimals(birds) end
         end
     end
-
     -- NPC BOUNTY
     if SETTINGS.NPCHumanESP then
         local npcs = workspace:FindFirstChild("NPCs")
@@ -307,7 +422,6 @@ local function ScanEntities()
             end
         end
     end
-
     -- DOMY GRACZY
     if SETTINGS.PlayerHouseESP then
         local props = workspace:FindFirstChild("Props")
@@ -325,8 +439,7 @@ local function ScanEntities()
             end
         end
     end
-
-    -- Funkcja skanująca Resources
+    -- RESOURCES
     local function scanResources(parentFolder)
         local resources = parentFolder:FindFirstChild("Resources")
         if not resources then return end
@@ -379,12 +492,10 @@ local function ScanEntities()
             end
         end
     end
-
     local staticProps = workspace:FindFirstChild("StaticProps")
     if staticProps then scanResources(staticProps) end
     local targetFilter = workspace:FindFirstChild("TargetFilter")
     if targetFilter then scanResources(targetFilter) end
-
     -- SKRZYNIE
     if SETTINGS.ChestESP then
         local sp = workspace:FindFirstChild("StaticProps")
@@ -404,7 +515,6 @@ local function ScanEntities()
             end
         end
     end
-
     -- PORZUCONE PRZEDMIOTY
     if SETTINGS.DroppedItemsESP then
         local carriables = workspace:FindFirstChild("Carriables")
@@ -419,7 +529,6 @@ local function ScanEntities()
             end
         end
     end
-
     -- TREASURE HUNT MARKERS
     if SETTINGS.TreasureMarkerESP then
         local function scanMarkers(parent)
@@ -440,12 +549,16 @@ local function ScanEntities()
         local targetFilter = workspace:FindFirstChild("TargetFilter")
         if targetFilter then scanMarkers(targetFilter) end
     end
-
     -- Usuwanie starych wpisów
     for key, _ in pairs(TrackedTargets) do
         if not activeKeys[key] then
             if CACHE[key] then CACHE[key]:Destroy(); CACHE[key] = nil end
             if SELECTION_BOX_CACHE[key] then SELECTION_BOX_CACHE[key]:Destroy(); SELECTION_BOX_CACHE[key] = nil end
+            if TRACER_CACHE[key] then TRACER_CACHE[key]:Remove(); TRACER_CACHE[key] = nil end
+            if BOX_CACHE[key] then
+                for _, obj in ipairs(BOX_CACHE[key]) do obj:Remove() end
+                BOX_CACHE[key] = nil
+            end
             TrackedTargets[key] = nil
         end
     end
@@ -457,7 +570,7 @@ local ScannerLoop = task.spawn(function()
     end
 end)
 
--- Funkcje pomocnicze aimbota
+-- Aimbot helpers
 local function GetAimPart(char)
     if SETTINGS.AimbotTargetPart == "Head" then
         return char:FindFirstChild("Head")
@@ -465,24 +578,17 @@ local function GetAimPart(char)
         return char:FindFirstChild("HumanoidRootPart")
     end
 end
-
 local function CheckTeam(player)
-    if SETTINGS.AimbotTeamCheck and player and player.Team == LocalPlayer.Team then
-        return true
-    end
+    if SETTINGS.AimbotTeamCheck and player and player.Team == LocalPlayer.Team then return true end
     return false
 end
-
 local function CheckAlive(character)
     if SETTINGS.AimbotAliveCheck then
         local humanoid = character:FindFirstChildOfClass("Humanoid")
-        if humanoid and humanoid.Health <= 0 then
-            return false
-        end
+        if humanoid and humanoid.Health <= 0 then return false end
     end
     return true
 end
-
 local function CheckWall(targetCharacter)
     if not SETTINGS.AimbotWallCheck then return false end
     local targetHead = targetCharacter:FindFirstChild("Head")
@@ -499,13 +605,12 @@ end
 local AimbotRunning = false
 local LockedTarget = nil
 local CurrentTween = nil
+local FOVTracerLine = nil   -- linia od FOV do celu
 
 local function CancelLock()
     LockedTarget = nil
-    if CurrentTween then
-        CurrentTween:Cancel()
-        CurrentTween = nil
-    end
+    if CurrentTween then CurrentTween:Cancel(); CurrentTween = nil end
+    if FOVTracerLine then FOVTracerLine.Visible = false end
 end
 
 local function RestoreCamera()
@@ -514,9 +619,7 @@ local function RestoreCamera()
         local character = LocalPlayer.Character
         if character then
             local humanoid = character:FindFirstChildOfClass("Humanoid")
-            if humanoid then
-                Camera.CameraSubject = humanoid
-            end
+            if humanoid then Camera.CameraSubject = humanoid end
         end
     end
 end
@@ -526,7 +629,14 @@ local function GetClosestPlayer()
     local targetPart = nil
     local shortestDistance = SETTINGS.AimbotFOV
 
-    local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    -- Wyznaczamy środek FOV: albo mysz, albo środek ekranu
+    local screenCenter
+    if SETTINGS.AimbotMouseFOV then
+        local mousePos = UserInputService:GetMouseLocation()
+        screenCenter = Vector2.new(mousePos.X, mousePos.Y)
+    else
+        screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    end
 
     for _, target in pairs(TrackedTargets) do
         if target.Type == "Player" then
@@ -537,7 +647,6 @@ local function GetClosestPlayer()
                     if CheckTeam(player) then continue end
                     if not CheckAlive(char) then continue end
                     if CheckWall(char) then continue end
-
                     local aimPart = GetAimPart(char)
                     if aimPart then
                         local screenPos, onScreen = Camera:WorldToScreenPoint(aimPart.Position)
@@ -556,39 +665,31 @@ local function GetClosestPlayer()
             end
         end
     end
-
     return targetPlayer, targetPart
 end
 
 local function AimAt(targetPart)
-    if not targetPart or not targetPart.Parent then
-        CancelLock()
-        return
-    end
-
+    if not targetPart or not targetPart.Parent then CancelLock(); return end
     local targetPos = targetPart.Position
     if SETTINGS.AimbotPrediction then
         local character = targetPart.Parent
         local hrp = character:FindFirstChild("HumanoidRootPart")
-        if hrp then
-            targetPos = targetPos + (hrp.Velocity * SETTINGS.AimbotPredictionStr)
-        end
+        if hrp then targetPos = targetPos + (hrp.Velocity * SETTINGS.AimbotPredictionStr) end
     end
 
     if SETTINGS.AimbotMethod == "Camera" then
-        -- Metoda Camera: kamera pozostaje w obecnym miejscu, tylko obraca się w kierunku celu
         if SETTINGS.AimbotOverrideCamera then
             Camera.CameraType = Enum.CameraType.Scriptable
             Camera.CameraSubject = nil
         end
+        -- Obrót kamery w miejscu
         local desiredCFrame = CFrame.new(Camera.CFrame.Position, targetPos)
-        -- Płynny obrót (smoothing)
         Camera.CFrame = Camera.CFrame:Lerp(desiredCFrame, SETTINGS.AimbotSmoothing)
     else
-        -- Metoda Mouse: przesuwa kursor dokładnie na pozycję celu na ekranie
+        -- Mouse
         local screenPos = Camera:WorldToScreenPoint(targetPos)
         local mousePos = UserInputService:GetMouseLocation()
-        local sens = math.clamp(SETTINGS.AimbotThirdPersonSens, 0.1, 10)
+        local sens = math.clamp(SETTINGS.AimbotMouseSens, 0.1, 10)
         local deltaX = (screenPos.X - mousePos.X) / sens
         local deltaY = (screenPos.Y - mousePos.Y) / sens
         mousemoverel(deltaX, deltaY)
@@ -607,6 +708,7 @@ if DrawingLib then
     FOVCircle.Visible = false
 end
 
+-- Główna pętla
 local RenderLoop = RunService.RenderStepped:Connect(function()
     -- ESP
     if SETTINGS.Enabled then
@@ -614,9 +716,12 @@ local RenderLoop = RunService.RenderStepped:Connect(function()
             local typeEnabled = false
             local showName = false
             local drawSelectBox = false
+            local showTracer = false
+            local showBox2D = false
 
             if target.Type == "Player" and SETTINGS.PlayerESP then
                 typeEnabled = true; showName = SETTINGS.PlayerName; drawSelectBox = SETTINGS.PlayerSelectBox
+                showTracer = SETTINGS.PlayerTracers; showBox2D = SETTINGS.PlayerBox2D
             elseif target.Type == "Animal" and SETTINGS.AnimalESP then
                 typeEnabled = true; showName = SETTINGS.AnimalName; drawSelectBox = SETTINGS.AnimalSelectBox
             elseif target.Type == "NPCHuman" and SETTINGS.NPCHumanESP then
@@ -640,12 +745,17 @@ local RenderLoop = RunService.RenderStepped:Connect(function()
             if not typeEnabled or not target.Part or not target.Part.Parent then
                 if CACHE[key] then CACHE[key]:Destroy(); CACHE[key] = nil end
                 if SELECTION_BOX_CACHE[key] then SELECTION_BOX_CACHE[key].Visible = false end
+                if TRACER_CACHE[key] then TRACER_CACHE[key].Visible = false end
+                if BOX_CACHE[key] then
+                    for _, obj in ipairs(BOX_CACHE[key]) do obj.Visible = false end
+                end
                 continue
             end
 
             local dist = math.floor((Camera.CFrame.Position - target.Part.Position).Magnitude)
             local inRange = dist <= SETTINGS.MaxDistance
 
+            -- Nazwa
             if inRange and showName then
                 local text = target.Prefix .. " [" .. dist .. "m]"
                 if not CACHE[key] then
@@ -659,6 +769,7 @@ local RenderLoop = RunService.RenderStepped:Connect(function()
                 if CACHE[key] then CACHE[key].Enabled = false end
             end
 
+            -- Select Box (3D)
             if inRange and drawSelectBox then
                 local adornee = target.Model or target.Part
                 if not SELECTION_BOX_CACHE[key] then
@@ -670,52 +781,97 @@ local RenderLoop = RunService.RenderStepped:Connect(function()
             else
                 if SELECTION_BOX_CACHE[key] then SELECTION_BOX_CACHE[key].Visible = false end
             end
+
+            -- Tracery (tylko dla graczy)
+            if inRange and showTracer and DrawingLib then
+                if not TRACER_CACHE[key] then createTracer(key, target.Color) end
+                local line = TRACER_CACHE[key]
+                if line then
+                    local startPos = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)  -- dół ekranu
+                    local screenPos = Camera:WorldToScreenPoint(target.Part.Position)
+                    line.From = startPos
+                    line.To = Vector2.new(screenPos.X, screenPos.Y)
+                    line.Visible = true
+                    line.Color = target.Color
+                end
+            else
+                if TRACER_CACHE[key] then TRACER_CACHE[key].Visible = false end
+            end
+
+            -- Box 2D (pełny obrys) – tylko dla graczy
+            if inRange and showBox2D and DrawingLib then
+                if not BOX_CACHE[key] then createBox2D(key, target.Color) end
+                local lines = BOX_CACHE[key]
+                if lines then
+                    local topLeft, bottomRight = GetScreenBounds(target.Model or target.Part)
+                    if topLeft and bottomRight then
+                        updateBox2D(lines, topLeft, bottomRight, target.Color)
+                    else
+                        for _, obj in ipairs(lines) do obj.Visible = false end
+                    end
+                end
+            else
+                if BOX_CACHE[key] then
+                    for _, obj in ipairs(BOX_CACHE[key]) do obj.Visible = false end
+                end
+            end
         end
     end
 
     -- AIMBOT
     if SETTINGS.AimbotEnabled then
-        -- Rysowanie FOV
+        -- Wyznacz środek FOV (w zależności od ustawienia)
+        local fovCenter = SETTINGS.AimbotMouseFOV and Vector2.new(UserInputService:GetMouseLocation().X, UserInputService:GetMouseLocation().Y)
+                            or Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+
+        -- Rysowanie koła FOV
         if FOVCircle then
             FOVCircle.Radius = SETTINGS.AimbotFOV
-            FOVCircle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+            FOVCircle.Position = fovCenter
             FOVCircle.Visible = true
-            if SETTINGS.AimbotMouseFOV then
-                local mousePos = UserInputService:GetMouseLocation()
-                FOVCircle.Position = Vector2.new(mousePos.X, mousePos.Y)
-            end
             FOVCircle.Color = LockedTarget and Color3.fromRGB(255, 70, 70) or Color3.fromRGB(255, 255, 255)
         end
 
+        -- FOV Tracer (linia od środka FOV do celu)
+        if DrawingLib and LockedTarget and LockedTarget.Character then
+            if not FOVTracerLine then
+                FOVTracerLine = DrawingLib.new("Line")
+                FOVTracerLine.Thickness = 1.5
+                FOVTracerLine.Transparency = 0.5
+                FOVTracerLine.Color = Color3.fromRGB(255, 255, 100)  -- żółty
+            end
+            local aimPart = GetAimPart(LockedTarget.Character)
+            if aimPart then
+                local screenPos = Camera:WorldToScreenPoint(aimPart.Position)
+                FOVTracerLine.From = fovCenter
+                FOVTracerLine.To = Vector2.new(screenPos.X, screenPos.Y)
+                FOVTracerLine.Visible = true
+            else
+                FOVTracerLine.Visible = false
+            end
+        else
+            if FOVTracerLine then FOVTracerLine.Visible = false end
+        end
+
         if AimbotRunning then
-            -- Logika wyboru celu
+            -- Sticky Aim
             if SETTINGS.AimbotStickyAim and LockedTarget then
                 local char = LockedTarget.Character
                 if char and char.Parent then
-                    if CheckTeam(LockedTarget) or not CheckAlive(char) or CheckWall(char) then
-                        CancelLock()
+                    if CheckTeam(LockedTarget) or not CheckAlive(char) or CheckWall(char) then CancelLock()
                     else
                         local aimPart = GetAimPart(char)
                         if aimPart then
                             local screenPos, onScreen = Camera:WorldToScreenPoint(aimPart.Position)
-                            if not onScreen then
-                                CancelLock()
+                            if not onScreen then CancelLock()
                             else
                                 local pos = Vector2.new(screenPos.X, screenPos.Y)
-                                local screenCenter = SETTINGS.AimbotMouseFOV and Vector2.new(UserInputService:GetMouseLocation().X, UserInputService:GetMouseLocation().Y) or Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-                                if (pos - screenCenter).Magnitude > SETTINGS.AimbotFOV then
-                                    CancelLock()
-                                else
-                                    AimAt(aimPart)
-                                end
+                                if (pos - fovCenter).Magnitude > SETTINGS.AimbotFOV then CancelLock()
+                                else AimAt(aimPart) end
                             end
-                        else
-                            CancelLock()
-                        end
+                        else CancelLock() end
                     end
-                else
-                    CancelLock()
-                end
+                else CancelLock() end
             end
 
             if not SETTINGS.AimbotStickyAim or not LockedTarget then
@@ -723,9 +879,7 @@ local RenderLoop = RunService.RenderStepped:Connect(function()
                 if targetPlayer and targetPart then
                     LockedTarget = targetPlayer
                     AimAt(targetPart)
-                else
-                    CancelLock()
-                end
+                else CancelLock() end
             end
         else
             CancelLock()
@@ -734,6 +888,7 @@ local RenderLoop = RunService.RenderStepped:Connect(function()
     else
         if FOVCircle then FOVCircle.Visible = false end
         CancelLock()
+        if FOVTracerLine then FOVTracerLine.Visible = false end
         RestoreCamera()
     end
 end)
@@ -764,7 +919,6 @@ end)
 -------------------------------------------------
 -- WINDUI + ICONS
 -------------------------------------------------
-
 print("[ESP] Loading libraries...")
 local Icons = loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/Icons/main/Main-v2.lua"))()
 local WindUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"))()
@@ -772,7 +926,7 @@ local WindUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/Footag
 print("[ESP] Libraries loaded, creating window...")
 
 local Window = WindUI:CreateWindow({
-    Title = "Universal ESP + Aimbot",
+    Title = "Universal ESP + Aimbot + Tracery",
     Icon = "eye",
     Folder = "UniversalESP",
     Size = UDim2.fromOffset(580, 550),
@@ -790,7 +944,6 @@ end
 -------------------------------------------------
 -- KONFIGURACJA
 -------------------------------------------------
-
 local function SaveConfig()
     pcall(function()
         if writefile then
@@ -822,45 +975,18 @@ local function LoadConfig()
         end
     end)
 end
-
 LoadConfig()
 
 -------------------------------------------------
 -- UI
 -------------------------------------------------
-
 local ESPTab = Window:Tab({ Title = "ESP", Icon = "eye" })
 
 local MainSection = ESPTab:Section({ Title = "Główne" })
-MainSection:Toggle({
-    Title = "Włącz ESP",
-    Value = SETTINGS.Enabled,
-    Callback = function(v) SETTINGS.Enabled = v; if not v then ClearESP() end; SaveConfig() end
-})
-MainSection:Slider({
-    Title = "Zasięg (m)",
-    Value = { Min = 100, Max = 5000, Default = SETTINGS.MaxDistance },
-    Step = 100,
-    Callback = function(v) SETTINGS.MaxDistance = v; SaveConfig() end
-})
-MainSection:Colorpicker({
-    Title = "Kolor ESP (gracze)",
-    Default = SETTINGS.ESPColor,
-    Callback = function(c) SETTINGS.ESPColor = c; SaveConfig() end
-})
+MainSection:Toggle({ Title = "Włącz ESP", Value = SETTINGS.Enabled, Callback = function(v) SETTINGS.Enabled = v; if not v then ClearESP() end; SaveConfig() end })
+MainSection:Slider({ Title = "Zasięg (m)", Value = { Min = 100, Max = 5000, Default = SETTINGS.MaxDistance }, Step = 100, Callback = function(v) SETTINGS.MaxDistance = v; SaveConfig() end })
+MainSection:Colorpicker({ Title = "Kolor ESP (gracze)", Default = SETTINGS.ESPColor, Callback = function(c) SETTINGS.ESPColor = c; SaveConfig() end })
 MainSection:Button({ Title = "Wyczyść Cache", Callback = ClearESP })
-MainSection:Slider({
-    Title = "Grubość linii Select Box",
-    Value = { Min = 0.01, Max = 1, Default = SETTINGS.SelectBoxLineThickness },
-    Step = 0.01,
-    Callback = function(v) SETTINGS.SelectBoxLineThickness = v; SaveConfig() end
-})
-MainSection:Slider({
-    Title = "Transparentność Select Box",
-    Value = { Min = 0, Max = 1, Default = SETTINGS.SelectBoxSurfaceTransp },
-    Step = 0.05,
-    Callback = function(v) SETTINGS.SelectBoxSurfaceTransp = v; SaveConfig() end
-})
 
 local TypeSection = ESPTab:Section({ Title = "Typy ESP" })
 
@@ -868,6 +994,8 @@ local function AddCategory(category, prefix)
     local mainFlag = prefix .. "ESP"
     local nameFlag = prefix .. "Name"
     local selectFlag = prefix .. "SelectBox"
+    local tracerFlag = prefix .. "Tracers"
+    local box2DFlag = prefix .. "Box2D"
 
     local mainToggle = TypeSection:Toggle({
         Title = category,
@@ -876,20 +1004,19 @@ local function AddCategory(category, prefix)
             SETTINGS[mainFlag] = v; SaveConfig()
             nameToggle:SetVisible(v)
             selectToggle:SetVisible(v)
+            if tracerToggle then tracerToggle:SetVisible(v) end
+            if box2DToggle then box2DToggle:SetVisible(v) end
         end
     })
-    local nameToggle = TypeSection:Toggle({
-        Title = "   Nazwa",
-        Value = SETTINGS[nameFlag],
-        Visible = SETTINGS[mainFlag],
-        Callback = function(v) SETTINGS[nameFlag] = v; SaveConfig() end
-    })
-    local selectToggle = TypeSection:Toggle({
-        Title = "   Select Box (3D)",
-        Value = SETTINGS[selectFlag],
-        Visible = SETTINGS[mainFlag],
-        Callback = function(v) SETTINGS[selectFlag] = v; SaveConfig() end
-    })
+    local nameToggle = TypeSection:Toggle({ Title = "   Nazwa", Value = SETTINGS[nameFlag], Visible = SETTINGS[mainFlag], Callback = function(v) SETTINGS[nameFlag] = v; SaveConfig() end })
+    local selectToggle = TypeSection:Toggle({ Title = "   Select Box (3D)", Value = SETTINGS[selectFlag], Visible = SETTINGS[mainFlag], Callback = function(v) SETTINGS[selectFlag] = v; SaveConfig() end })
+    local tracerToggle, box2DToggle
+    if tracerFlag and SETTINGS[tracerFlag] ~= nil then
+        tracerToggle = TypeSection:Toggle({ Title = "   Tracery", Value = SETTINGS[tracerFlag], Visible = SETTINGS[mainFlag], Callback = function(v) SETTINGS[tracerFlag] = v; SaveConfig() end })
+    end
+    if box2DFlag and SETTINGS[box2DFlag] ~= nil then
+        box2DToggle = TypeSection:Toggle({ Title = "   Box 2D", Value = SETTINGS[box2DFlag], Visible = SETTINGS[mainFlag], Callback = function(v) SETTINGS[box2DFlag] = v; SaveConfig() end })
+    end
 end
 
 AddCategory("Gracze", "Player")
@@ -907,30 +1034,17 @@ AddCategory("Znaczniki skarbów", "TreasureMarker")
 local AimbotTab = Window:Tab({ Title = "Aimbot", Icon = "crosshair" })
 local AimbotSection = AimbotTab:Section({ Title = "Ustawienia Aimbota" })
 
-AimbotSection:Toggle({
-    Title = "Włącz Aimbot",
-    Value = SETTINGS.AimbotEnabled,
-    Callback = function(v) SETTINGS.AimbotEnabled = v; if not v then RestoreCamera() end; SaveConfig() end
-})
-AimbotSection:Slider({
-    Title = "FOV (promień)",
-    Value = { Min = 50, Max = 500, Default = SETTINGS.AimbotFOV },
-    Step = 10,
-    Callback = function(v) SETTINGS.AimbotFOV = v; SaveConfig() end
-})
+AimbotSection:Toggle({ Title = "Włącz Aimbot", Value = SETTINGS.AimbotEnabled, Callback = function(v) SETTINGS.AimbotEnabled = v; if not v then RestoreCamera() end; SaveConfig() end })
+AimbotSection:Slider({ Title = "FOV (promień)", Value = { Min = 50, Max = 500, Default = SETTINGS.AimbotFOV }, Step = 10, Callback = function(v) SETTINGS.AimbotFOV = v; SaveConfig() end })
+AimbotSection:Toggle({ Title = "FOV podąża za myszą", Value = SETTINGS.AimbotMouseFOV, Callback = function(v) SETTINGS.AimbotMouseFOV = v; SaveConfig() end })
 AimbotSection:Dropdown({
     Title = "Metoda celowania",
     Values = { "Camera", "Mouse" },
-    Value = SETTINGS.AimbotMethod or "Camera",
+    Value = SETTINGS.AimbotMethod,
     Callback = function(v)
         SETTINGS.AimbotMethod = v
-        if v == "Camera" then
-            SETTINGS.AimbotThirdPerson = false
-            SETTINGS.AimbotOverrideCamera = true
-        else
-            SETTINGS.AimbotThirdPerson = true
-            SETTINGS.AimbotOverrideCamera = false
-        end
+        if v == "Camera" then SETTINGS.AimbotOverrideCamera = true
+        else SETTINGS.AimbotOverrideCamera = false end
         SaveConfig()
     end
 })
@@ -938,84 +1052,25 @@ AimbotSection:Dropdown({
     Title = "Cel",
     Values = { "Głowa", "Środek" },
     Value = SETTINGS.AimbotTargetPart == "Head" and "Głowa" or "Środek",
-    Callback = function(v)
-        SETTINGS.AimbotTargetPart = v == "Głowa" and "Head" or "HumanoidRootPart"
-        SaveConfig()
-    end
+    Callback = function(v) SETTINGS.AimbotTargetPart = v == "Głowa" and "Head" or "HumanoidRootPart"; SaveConfig() end
 })
-AimbotSection:Slider({
-    Title = "Płynność kamery (0.01 - 1)",
-    Value = { Min = 0.01, Max = 1, Default = SETTINGS.AimbotSmoothing },
-    Step = 0.01,
-    Callback = function(v) SETTINGS.AimbotSmoothing = v; SaveConfig() end
-})
-AimbotSection:Slider({
-    Title = "Czułość myszy (tylko Mouse)",
-    Value = { Min = 0.1, Max = 10, Default = SETTINGS.AimbotThirdPersonSens },
-    Step = 0.1,
-    Callback = function(v) SETTINGS.AimbotThirdPersonSens = v; SaveConfig() end
-})
-AimbotSection:Toggle({
-    Title = "Predykcja ruchu",
-    Value = SETTINGS.AimbotPrediction,
-    Callback = function(v) SETTINGS.AimbotPrediction = v; SaveConfig() end
-})
-AimbotSection:Slider({
-    Title = "Siła predykcji",
-    Value = { Min = 0, Max = 0.2, Default = SETTINGS.AimbotPredictionStr },
-    Step = 0.001,
-    Callback = function(v) SETTINGS.AimbotPredictionStr = v; SaveConfig() end
-})
-AimbotSection:Toggle({
-    Title = "Team Check",
-    Value = SETTINGS.AimbotTeamCheck,
-    Callback = function(v) SETTINGS.AimbotTeamCheck = v; SaveConfig() end
-})
-AimbotSection:Toggle({
-    Title = "Alive Check",
-    Value = SETTINGS.AimbotAliveCheck,
-    Callback = function(v) SETTINGS.AimbotAliveCheck = v; SaveConfig() end
-})
-AimbotSection:Toggle({
-    Title = "Wall Check",
-    Value = SETTINGS.AimbotWallCheck,
-    Callback = function(v) SETTINGS.AimbotWallCheck = v; SaveConfig() end
-})
-AimbotSection:Toggle({
-    Title = "Sticky Aim",
-    Value = SETTINGS.AimbotStickyAim,
-    Callback = function(v) SETTINGS.AimbotStickyAim = v; SaveConfig() end
-})
-AimbotSection:Toggle({
-    Title = "Wymuś kontrolę kamery",
-    Value = SETTINGS.AimbotOverrideCamera,
-    Callback = function(v) SETTINGS.AimbotOverrideCamera = v; SaveConfig() end
-})
-AimbotSection:Toggle({
-    Title = "Toggle (zamiast przytrzymywania)",
-    Value = SETTINGS.AimbotToggle,
-    Callback = function(v) SETTINGS.AimbotToggle = v; SaveConfig() end
-})
+AimbotSection:Slider({ Title = "Płynność kamery (0.01-1)", Value = { Min = 0.01, Max = 1, Default = SETTINGS.AimbotSmoothing }, Step = 0.01, Callback = function(v) SETTINGS.AimbotSmoothing = v; SaveConfig() end })
+AimbotSection:Slider({ Title = "Czułość myszy", Value = { Min = 0.1, Max = 10, Default = SETTINGS.AimbotMouseSens }, Step = 0.1, Callback = function(v) SETTINGS.AimbotMouseSens = v; SaveConfig() end })
+AimbotSection:Toggle({ Title = "Predykcja ruchu", Value = SETTINGS.AimbotPrediction, Callback = function(v) SETTINGS.AimbotPrediction = v; SaveConfig() end })
+AimbotSection:Slider({ Title = "Siła predykcji", Value = { Min = 0, Max = 0.2, Default = SETTINGS.AimbotPredictionStr }, Step = 0.001, Callback = function(v) SETTINGS.AimbotPredictionStr = v; SaveConfig() end })
+AimbotSection:Toggle({ Title = "Team Check", Value = SETTINGS.AimbotTeamCheck, Callback = function(v) SETTINGS.AimbotTeamCheck = v; SaveConfig() end })
+AimbotSection:Toggle({ Title = "Alive Check", Value = SETTINGS.AimbotAliveCheck, Callback = function(v) SETTINGS.AimbotAliveCheck = v; SaveConfig() end })
+AimbotSection:Toggle({ Title = "Wall Check", Value = SETTINGS.AimbotWallCheck, Callback = function(v) SETTINGS.AimbotWallCheck = v; SaveConfig() end })
+AimbotSection:Toggle({ Title = "Sticky Aim", Value = SETTINGS.AimbotStickyAim, Callback = function(v) SETTINGS.AimbotStickyAim = v; SaveConfig() end })
+AimbotSection:Toggle({ Title = "Wymuś kontrolę kamery", Value = SETTINGS.AimbotOverrideCamera, Callback = function(v) SETTINGS.AimbotOverrideCamera = v; SaveConfig() end })
+AimbotSection:Toggle({ Title = "Toggle (zamiast przytrzymywania)", Value = SETTINGS.AimbotToggle, Callback = function(v) SETTINGS.AimbotToggle = v; SaveConfig() end })
 
 -- Ustawienia
 local SettingsTab = Window:Tab({ Title = "Ustawienia", Icon = "settings" })
 local UISection = SettingsTab:Section({ Title = "UI" })
-UISection:Colorpicker({
-    Title = "Kolor akcentu",
-    Default = Color3.fromRGB(0, 120, 255),
-    Callback = function(c) WindUI:SetAccentColor(c) end
-})
-UISection:Dropdown({
-    Title = "Motyw",
-    Values = { "Default", "Dark Green", "Dark Blue", "Purple Rose", "Skeet" },
-    Value = "Default",
-    Callback = function(t) WindUI:SetTheme(t) end
-})
-UISection:Keybind({
-    Title = "Klawisz menu",
-    Value = tostring(Window.ToggleKey):match("%.(.+)") or "LeftAlt",
-    Callback = function(v) Window:SetToggleKey(Enum.KeyCode[v]); SaveConfig() end
-})
+UISection:Colorpicker({ Title = "Kolor akcentu", Default = Color3.fromRGB(0, 120, 255), Callback = function(c) WindUI:SetAccentColor(c) end })
+UISection:Dropdown({ Title = "Motyw", Values = { "Default", "Dark Green", "Dark Blue", "Purple Rose", "Skeet" }, Value = "Default", Callback = function(t) WindUI:SetTheme(t) end })
+UISection:Keybind({ Title = "Klawisz menu", Value = tostring(Window.ToggleKey):match("%.(.+)") or "LeftAlt", Callback = function(v) Window:SetToggleKey(Enum.KeyCode[v]); SaveConfig() end })
 UISection:Button({
     Title = "Zniszcz Menu (Unload)",
     Callback = function()
@@ -1023,9 +1078,10 @@ UISection:Button({
         if RenderLoop then RenderLoop:Disconnect() end
         if ScannerLoop then task.cancel(ScannerLoop) end
         if FOVCircle then FOVCircle:Remove() end
+        if FOVTracerLine then FOVTracerLine:Remove() end
         pcall(function() Window:Destroy() end)
     end
 })
 
 print("[ESP] Script fully loaded.")
-Notify("Universal ESP + Aimbot", "Załadowano! Otwórz menu: LeftAlt", 5)
+Notify("Universal ESP + Aimbot + Tracery", "Załadowano! Otwórz menu: LeftAlt", 5)
