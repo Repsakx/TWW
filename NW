@@ -1,0 +1,1031 @@
+--[[
+    UNIVERSAL ESP + AIMBOT (NOWA GRA) + WINDUI
+    Menu: Lewy Alt | Aimbot trigger: Prawy przycisk myszy
+--]]
+
+print("[ESP] Starting...")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local Camera = workspace.CurrentCamera
+local LocalPlayer = Players.LocalPlayer
+
+-- Sprawdzenie biblioteki Drawing
+local DrawingLib = nil
+pcall(function()
+    DrawingLib = Drawing
+end)
+if not DrawingLib then
+    warn("[ESP] Drawing library not found - FOV circle will not be displayed")
+end
+
+-------------------------------------------------
+-- ESP CORE
+-------------------------------------------------
+
+local ESPContainer = Instance.new("Folder")
+ESPContainer.Name = "ESPContainer"
+ESPContainer.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+local SELECTION_BOX_CONTAINER = Instance.new("Folder")
+SELECTION_BOX_CONTAINER.Name = "SelectionBoxContainer"
+SELECTION_BOX_CONTAINER.Parent = workspace
+
+local SETTINGS = {
+    Enabled                = false,
+    MaxDistance            = 3000,
+    ESPColor               = Color3.fromRGB(255, 255, 255),
+    SelectBoxLineThickness = 0.05,
+    SelectBoxSurfaceTransp = 0.7,
+
+    -- Kategorie ESP
+    PlayerESP              = false,
+    PlayerName             = true,
+    PlayerSelectBox        = false,
+
+    AnimalESP              = false,
+    AnimalName             = true,
+    AnimalSelectBox        = false,
+
+    NPCHumanESP            = false,
+    NPCHumanName           = true,
+    NPCHumanSelectBox      = false,
+
+    PlayerHouseESP         = false,
+    PlayerHouseName        = true,
+    PlayerHouseSelectBox   = false,
+
+    TreeESP                = false,
+    TreeName               = true,
+    TreeSelectBox          = false,
+
+    OreESP                 = false,
+    OreName                = true,
+    OreSelectBox           = false,
+
+    ChestESP               = false,
+    ChestName              = true,
+    ChestSelectBox         = false,
+
+    DroppedItemsESP        = false,
+    DroppedItemsName       = true,
+    DroppedItemsSelectBox  = false,
+
+    TreasureMarkerESP      = false,
+    TreasureMarkerName     = true,
+    TreasureMarkerSelectBox= false,
+
+    VegetationESP          = false,
+    VegetationName         = true,
+    VegetationSelectBox    = false,
+
+    -- Aimbot
+    AimbotEnabled          = false,
+    AimbotFOV              = 200,
+    AimbotMethod           = "Camera",   -- "Camera" lub "Mouse"
+    AimbotSensitivity      = 0.1,        -- nieużywane dla Camera (zostaje dla kompatybilności)
+    AimbotSmoothing        = 0.5,        -- szybkość obrotu kamery (0.15 = płynnie, 1 = natychmiast)
+    AimbotTargetPart       = "Head",
+    AimbotTriggerKey       = "MouseButton2",
+    AimbotToggle           = false,
+    AimbotTeamCheck        = false,
+    AimbotAliveCheck       = true,
+    AimbotWallCheck        = false,
+    AimbotPrediction       = true,
+    AimbotPredictionStr    = 0.065,
+    AimbotStickyAim        = false,
+    AimbotOverrideCamera   = true,
+    AimbotThirdPersonSens  = 3,          -- tylko dla metody Mouse
+    AimbotMouseFOV         = false,
+    AimbotThirdPerson      = false,      -- automatycznie ustawiane przez metodę
+}
+
+local CACHE = {}
+local SELECTION_BOX_CACHE = {}
+
+local function ClearESP()
+    for _, v in pairs(CACHE) do if v and v.Parent then v:Destroy() end end
+    table.clear(CACHE)
+    for _, sb in pairs(SELECTION_BOX_CACHE) do if sb and sb.Parent then sb:Destroy() end end
+    table.clear(SELECTION_BOX_CACHE)
+    table.clear(TrackedTargets)
+
+    local old = LocalPlayer.PlayerGui:FindFirstChild("ESPContainer")
+    if old then old:Destroy() end
+    local oldSb = workspace:FindFirstChild("SelectionBoxContainer")
+    if oldSb then oldSb:Destroy() end
+
+    ESPContainer = Instance.new("Folder")
+    ESPContainer.Name = "ESPContainer"
+    ESPContainer.Parent = LocalPlayer.PlayerGui
+    SELECTION_BOX_CONTAINER = Instance.new("Folder")
+    SELECTION_BOX_CONTAINER.Name = "SelectionBoxContainer"
+    SELECTION_BOX_CONTAINER.Parent = workspace
+end
+
+local TEAM_COLORS = {
+    ["Citizens"] = Color3.fromRGB(0, 255, 0),
+    ["Lawmen"]   = Color3.fromRGB(0, 170, 255),
+    ["Outlaws"]  = Color3.fromRGB(255, 0, 0),
+}
+
+local function GetPlayerColor(plr)
+    if plr and plr.Team then
+        return TEAM_COLORS[plr.Team.Name] or SETTINGS.ESPColor
+    end
+    return SETTINGS.ESPColor
+end
+
+local function GetAnimalColor(model)
+    local body = model:FindFirstChild("Torso") or model:FindFirstChild("Body") or model:FindFirstChild("Head")
+    if body and body:IsA("BasePart") then return body.Color end
+    return Color3.fromRGB(255, 170, 0)
+end
+
+local function GetColorName(color)
+    local r,g,b = math.floor(color.R*255), math.floor(color.G*255), math.floor(color.B*255)
+    if r < 30 and g < 30 and b < 30 then return "Black"
+    elseif r > 200 and g > 200 and b > 200 then return "White"
+    elseif r > 200 and g < 50 and b < 50 then return "Red"
+    elseif r < 50 and g > 150 and b < 50 then return "Green"
+    elseif r < 50 and g < 50 and b > 150 then return "Blue"
+    elseif r > 200 and g > 100 and b < 50 then return "Orange"
+    elseif r > 200 and g > 200 and b < 50 then return "Yellow"
+    elseif r > 100 and g > 50 and b < 50 then return "Brown"
+    elseif r < 80 and g < 80 and b < 80 then return "Dark Gray"
+    elseif r > 150 and g > 150 and b > 150 then return "Light Gray"
+    elseif r > 180 and g < 100 and b > 180 then return "Purple"
+    elseif r > 180 and g > 180 and b < 100 then return "Olive"
+    elseif r < 100 and g > 180 and b > 180 then return "Cyan"
+    else return "Unknown" end
+end
+
+local function GetTreeColor(model)
+    local leaves = model:FindFirstChild("Leaves") or model:FindFirstChild("Leaf") or model:FindFirstChild("foliage")
+    if leaves and leaves:IsA("BasePart") then return leaves.Color end
+    return Color3.fromRGB(0, 200, 50)
+end
+
+local function GetOreColor(model)
+    for _, child in pairs(model:GetChildren()) do
+        if child:IsA("BasePart") and child.Name ~= "Ignore" then return child.Color end
+    end
+    return Color3.fromRGB(100, 200, 255)
+end
+
+local function FindBestTargetPart(model)
+    if not model then return nil end
+    if model:IsA("BasePart") then return model end
+    if model:IsA("Model") then
+        if model.PrimaryPart then return model.PrimaryPart end
+        for _, part in pairs(model:GetChildren()) do if part:IsA("BasePart") then return part end end
+        for _, part in pairs(model:GetDescendants()) do if part:IsA("BasePart") then return part end end
+    end
+    return nil
+end
+
+local function CreateESP(part, text, color)
+    local bb = Instance.new("BillboardGui")
+    bb.AlwaysOnTop = true
+    bb.Size = UDim2.new(0, 300, 0, 30)
+    bb.StudsOffset = Vector3.new(0, 2.5, 0)
+    bb.Adornee = part
+    bb.Parent = ESPContainer
+
+    local lbl = Instance.new("TextLabel")
+    lbl.BackgroundTransparency = 1
+    lbl.Size = UDim2.new(1, 0, 1, 0)
+    lbl.Font = Enum.Font.GothamBold
+    lbl.TextScaled = false
+    lbl.TextSize = 11
+    lbl.TextStrokeTransparency = 0.25
+    lbl.TextStrokeColor3 = Color3.new(0, 0, 0)
+    lbl.TextColor3 = color
+    lbl.Text = text
+    lbl.Parent = bb
+    return bb, lbl
+end
+
+-- Select Box (3D)
+local function CreateSelectionBox(adornee, color)
+    if not adornee then return nil end
+    local sb = Instance.new("SelectionBox")
+    sb.Name = "ESP_SelectBox"
+    sb.Adornee = adornee
+    sb.Color3 = color
+    sb.LineThickness = SETTINGS.SelectBoxLineThickness
+    sb.SurfaceColor3 = color
+    sb.SurfaceTransparency = SETTINGS.SelectBoxSurfaceTransp
+    sb.Visible = true
+    sb.Parent = SELECTION_BOX_CONTAINER
+    return sb
+end
+
+local function UpdateSelectionBox(sb, color)
+    if not sb then return end
+    sb.Color3 = color
+    sb.SurfaceColor3 = color
+    sb.LineThickness = SETTINGS.SelectBoxLineThickness
+    sb.SurfaceTransparency = SETTINGS.SelectBoxSurfaceTransp
+    sb.Visible = true
+end
+
+-------------------------------------------------
+-- CACHING & SCANNING
+-------------------------------------------------
+
+local TrackedTargets = {}
+
+local function ScanEntities()
+    local activeKeys = {}
+
+    -- GRACZE (zawsze skanowani, jeśli włączone ESP lub Aimbot)
+    if SETTINGS.PlayerESP or SETTINGS.AimbotEnabled then
+        local chars = workspace:FindFirstChild("Characters")
+        if chars then
+            for _, char in pairs(chars:GetChildren()) do
+                local hrp = char:FindFirstChild("HumanoidRootPart")
+                if hrp then
+                    local key = "PLAYER_" .. char.Name
+                    activeKeys[key] = true
+                    local plr = Players:FindFirstChild(char.Name)
+                    local color = GetPlayerColor(plr)
+                    TrackedTargets[key] = { Part = hrp, Color = color, Prefix = char.Name, Type = "Player", Model = char }
+                end
+            end
+        end
+    end
+
+    -- ZWIERZĘTA
+    if SETTINGS.AnimalESP then
+        local function scanAnimals(parent)
+            for _, npc in pairs(parent:GetChildren()) do
+                local char = npc:FindFirstChild("Character")
+                if char then
+                    local hrp = char:FindFirstChild("HumanoidRootPart")
+                    if hrp then
+                        local key = "ANIMAL_" .. npc:GetDebugId()
+                        activeKeys[key] = true
+                        local color = GetAnimalColor(char)
+                        local colorName = GetColorName(color)
+                        local prefix = string.format("%s - %s", npc.Name, colorName)
+                        TrackedTargets[key] = { Part = hrp, Color = color, Prefix = prefix, Type = "Animal", Model = char }
+                    end
+                end
+            end
+        end
+        local npcs = workspace:FindFirstChild("NPCs")
+        if npcs then
+            local animals = npcs:FindFirstChild("Animals")
+            if animals then scanAnimals(animals) end
+            local birds = npcs:FindFirstChild("Birds")
+            if birds then scanAnimals(birds) end
+        end
+    end
+
+    -- NPC BOUNTY
+    if SETTINGS.NPCHumanESP then
+        local npcs = workspace:FindFirstChild("NPCs")
+        if npcs then
+            local humans = npcs:FindFirstChild("Humans")
+            if humans then
+                local bounty = humans:FindFirstChild("BountyCombatNPCs")
+                if bounty then
+                    for _, npc in pairs(bounty:GetChildren()) do
+                        local char = npc:FindFirstChild("Character")
+                        if char then
+                            local hrp = char:FindFirstChild("HumanoidRootPart")
+                            if hrp then
+                                local key = "NPCH_" .. npc:GetDebugId()
+                                activeKeys[key] = true
+                                TrackedTargets[key] = { Part = hrp, Color = Color3.fromRGB(255, 255, 0), Prefix = npc.Name, Type = "NPCHuman", Model = char }
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- DOMY GRACZY
+    if SETTINGS.PlayerHouseESP then
+        local props = workspace:FindFirstChild("Props")
+        if props then
+            local houses = props:FindFirstChild("PlayerHouses")
+            if houses then
+                for _, house in pairs(houses:GetChildren()) do
+                    local part = FindBestTargetPart(house)
+                    if part then
+                        local key = "HOUSE_" .. house:GetDebugId()
+                        activeKeys[key] = true
+                        TrackedTargets[key] = { Part = part, Color = Color3.fromRGB(0, 255, 255), Prefix = house.Name, Type = "PlayerHouse", Model = house }
+                    end
+                end
+            end
+        end
+    end
+
+    -- Funkcja skanująca Resources
+    local function scanResources(parentFolder)
+        local resources = parentFolder:FindFirstChild("Resources")
+        if not resources then return end
+        for _, res in pairs(resources:GetChildren()) do
+            if not res:IsA("Model") then continue end
+            local hasOres = res:FindFirstChild("Ores")
+            if hasOres then
+                if SETTINGS.OreESP then
+                    local orePart
+                    for _, child in pairs(hasOres:GetChildren()) do
+                        if child:IsA("BasePart") and child.Name ~= "Ignore" then orePart = child; break end
+                    end
+                    if orePart then
+                        local key = "ORE_" .. res:GetDebugId()
+                        activeKeys[key] = true
+                        local color = GetOreColor(hasOres)
+                        TrackedTargets[key] = { Part = orePart, Color = color, Prefix = res.Name, Type = "Ore", Model = res }
+                    end
+                end
+            elseif SETTINGS.TreeESP or SETTINGS.VegetationESP then
+                local hasPlant = res:FindFirstChild("Plant")
+                local hasFruits = res:FindFirstChild("Fruits")
+                if hasPlant or hasFruits then
+                    if SETTINGS.VegetationESP then
+                        local vegPart
+                        if hasPlant then vegPart = FindBestTargetPart(hasPlant)
+                        elseif hasFruits then
+                            for _, fruit in pairs(hasFruits:GetChildren()) do
+                                if fruit:IsA("BasePart") then vegPart = fruit; break end
+                            end
+                        end
+                        if vegPart then
+                            local key = "VEG_" .. res:GetDebugId()
+                            activeKeys[key] = true
+                            local color = Color3.fromRGB(0, 255, 100)
+                            TrackedTargets[key] = { Part = vegPart, Color = color, Prefix = res.Name, Type = "Vegetation", Model = res }
+                        end
+                    end
+                else
+                    if SETTINGS.TreeESP then
+                        local part = FindBestTargetPart(res)
+                        if part then
+                            local key = "TREE_" .. res:GetDebugId()
+                            activeKeys[key] = true
+                            local color = GetTreeColor(res)
+                            TrackedTargets[key] = { Part = part, Color = color, Prefix = res.Name, Type = "Tree", Model = res }
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    local staticProps = workspace:FindFirstChild("StaticProps")
+    if staticProps then scanResources(staticProps) end
+    local targetFilter = workspace:FindFirstChild("TargetFilter")
+    if targetFilter then scanResources(targetFilter) end
+
+    -- SKRZYNIE
+    if SETTINGS.ChestESP then
+        local sp = workspace:FindFirstChild("StaticProps")
+        if sp then
+            local chests = sp:FindFirstChild("SmallChests")
+            if chests then
+                for _, chest in pairs(chests:GetChildren()) do
+                    if chest:IsA("Model") then
+                        local part = FindBestTargetPart(chest)
+                        if part then
+                            local key = "CHEST_" .. chest:GetDebugId()
+                            activeKeys[key] = true
+                            TrackedTargets[key] = { Part = part, Color = Color3.fromRGB(255, 215, 0), Prefix = chest.Name, Type = "Chest", Model = chest }
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- PORZUCONE PRZEDMIOTY
+    if SETTINGS.DroppedItemsESP then
+        local carriables = workspace:FindFirstChild("Carriables")
+        if carriables then
+            for _, item in pairs(carriables:GetChildren()) do
+                local part = FindBestTargetPart(item)
+                if part then
+                    local key = "DROPPED_" .. item:GetDebugId()
+                    activeKeys[key] = true
+                    TrackedTargets[key] = { Part = part, Color = Color3.fromRGB(255, 165, 0), Prefix = item.Name, Type = "DroppedItem", Model = item }
+                end
+            end
+        end
+    end
+
+    -- TREASURE HUNT MARKERS
+    if SETTINGS.TreasureMarkerESP then
+        local function scanMarkers(parent)
+            local markers = parent:FindFirstChild("TreasureHuntMarkers")
+            if markers then
+                for _, marker in pairs(markers:GetChildren()) do
+                    local part = FindBestTargetPart(marker)
+                    if part then
+                        local key = "MARKER_" .. marker:GetDebugId()
+                        activeKeys[key] = true
+                        TrackedTargets[key] = { Part = part, Color = Color3.fromRGB(255, 105, 180), Prefix = marker.Name, Type = "TreasureMarker", Model = marker }
+                    end
+                end
+            end
+        end
+        local props = workspace:FindFirstChild("Props")
+        if props then scanMarkers(props) end
+        local targetFilter = workspace:FindFirstChild("TargetFilter")
+        if targetFilter then scanMarkers(targetFilter) end
+    end
+
+    -- Usuwanie starych wpisów
+    for key, _ in pairs(TrackedTargets) do
+        if not activeKeys[key] then
+            if CACHE[key] then CACHE[key]:Destroy(); CACHE[key] = nil end
+            if SELECTION_BOX_CACHE[key] then SELECTION_BOX_CACHE[key]:Destroy(); SELECTION_BOX_CACHE[key] = nil end
+            TrackedTargets[key] = nil
+        end
+    end
+end
+
+local ScannerLoop = task.spawn(function()
+    while task.wait(1.5) do
+        if SETTINGS.Enabled or SETTINGS.AimbotEnabled then pcall(ScanEntities) end
+    end
+end)
+
+-- Funkcje pomocnicze aimbota
+local function GetAimPart(char)
+    if SETTINGS.AimbotTargetPart == "Head" then
+        return char:FindFirstChild("Head")
+    else
+        return char:FindFirstChild("HumanoidRootPart")
+    end
+end
+
+local function CheckTeam(player)
+    if SETTINGS.AimbotTeamCheck and player and player.Team == LocalPlayer.Team then
+        return true
+    end
+    return false
+end
+
+local function CheckAlive(character)
+    if SETTINGS.AimbotAliveCheck then
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if humanoid and humanoid.Health <= 0 then
+            return false
+        end
+    end
+    return true
+end
+
+local function CheckWall(targetCharacter)
+    if not SETTINGS.AimbotWallCheck then return false end
+    local targetHead = targetCharacter:FindFirstChild("Head")
+    if not targetHead then return true end
+    local origin = Camera.CFrame.Position
+    local direction = (targetHead.Position - origin).unit * (targetHead.Position - origin).magnitude
+    local raycastParams = RaycastParams.new()
+    raycastParams.FilterDescendantsInstances = {LocalPlayer.Character, targetCharacter}
+    raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
+    local raycastResult = workspace:Raycast(origin, direction, raycastParams)
+    return raycastResult ~= nil
+end
+
+local AimbotRunning = false
+local LockedTarget = nil
+local CurrentTween = nil
+
+local function CancelLock()
+    LockedTarget = nil
+    if CurrentTween then
+        CurrentTween:Cancel()
+        CurrentTween = nil
+    end
+end
+
+local function RestoreCamera()
+    if Camera.CameraType == Enum.CameraType.Scriptable then
+        Camera.CameraType = Enum.CameraType.Custom
+        local character = LocalPlayer.Character
+        if character then
+            local humanoid = character:FindFirstChildOfClass("Humanoid")
+            if humanoid then
+                Camera.CameraSubject = humanoid
+            end
+        end
+    end
+end
+
+local function GetClosestPlayer()
+    local targetPlayer = nil
+    local targetPart = nil
+    local shortestDistance = SETTINGS.AimbotFOV
+
+    local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+
+    for _, target in pairs(TrackedTargets) do
+        if target.Type == "Player" then
+            local char = target.Model
+            if char and char.Parent then
+                local player = Players:FindFirstChild(char.Name)
+                if player and player ~= LocalPlayer then
+                    if CheckTeam(player) then continue end
+                    if not CheckAlive(char) then continue end
+                    if CheckWall(char) then continue end
+
+                    local aimPart = GetAimPart(char)
+                    if aimPart then
+                        local screenPos, onScreen = Camera:WorldToScreenPoint(aimPart.Position)
+                        if onScreen then
+                            local dist = (Vector2.new(screenPos.X, screenPos.Y) - screenCenter).Magnitude
+                            if dist <= SETTINGS.AimbotFOV then
+                                if dist < shortestDistance then
+                                    shortestDistance = dist
+                                    targetPlayer = player
+                                    targetPart = aimPart
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return targetPlayer, targetPart
+end
+
+local function AimAt(targetPart)
+    if not targetPart or not targetPart.Parent then
+        CancelLock()
+        return
+    end
+
+    local targetPos = targetPart.Position
+    if SETTINGS.AimbotPrediction then
+        local character = targetPart.Parent
+        local hrp = character:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            targetPos = targetPos + (hrp.Velocity * SETTINGS.AimbotPredictionStr)
+        end
+    end
+
+    if SETTINGS.AimbotMethod == "Camera" then
+        -- Metoda Camera: kamera pozostaje w obecnym miejscu, tylko obraca się w kierunku celu
+        if SETTINGS.AimbotOverrideCamera then
+            Camera.CameraType = Enum.CameraType.Scriptable
+            Camera.CameraSubject = nil
+        end
+        local desiredCFrame = CFrame.new(Camera.CFrame.Position, targetPos)
+        -- Płynny obrót (smoothing)
+        Camera.CFrame = Camera.CFrame:Lerp(desiredCFrame, SETTINGS.AimbotSmoothing)
+    else
+        -- Metoda Mouse: przesuwa kursor dokładnie na pozycję celu na ekranie
+        local screenPos = Camera:WorldToScreenPoint(targetPos)
+        local mousePos = UserInputService:GetMouseLocation()
+        local sens = math.clamp(SETTINGS.AimbotThirdPersonSens, 0.1, 10)
+        local deltaX = (screenPos.X - mousePos.X) / sens
+        local deltaY = (screenPos.Y - mousePos.Y) / sens
+        mousemoverel(deltaX, deltaY)
+    end
+end
+
+-- Rysowanie FOV
+local FOVCircle = nil
+if DrawingLib then
+    FOVCircle = DrawingLib.new("Circle")
+    FOVCircle.Thickness = 1
+    FOVCircle.Filled = false
+    FOVCircle.NumSides = 60
+    FOVCircle.Color = Color3.fromRGB(255, 255, 255)
+    FOVCircle.Transparency = 0.5
+    FOVCircle.Visible = false
+end
+
+local RenderLoop = RunService.RenderStepped:Connect(function()
+    -- ESP
+    if SETTINGS.Enabled then
+        for key, target in pairs(TrackedTargets) do
+            local typeEnabled = false
+            local showName = false
+            local drawSelectBox = false
+
+            if target.Type == "Player" and SETTINGS.PlayerESP then
+                typeEnabled = true; showName = SETTINGS.PlayerName; drawSelectBox = SETTINGS.PlayerSelectBox
+            elseif target.Type == "Animal" and SETTINGS.AnimalESP then
+                typeEnabled = true; showName = SETTINGS.AnimalName; drawSelectBox = SETTINGS.AnimalSelectBox
+            elseif target.Type == "NPCHuman" and SETTINGS.NPCHumanESP then
+                typeEnabled = true; showName = SETTINGS.NPCHumanName; drawSelectBox = SETTINGS.NPCHumanSelectBox
+            elseif target.Type == "PlayerHouse" and SETTINGS.PlayerHouseESP then
+                typeEnabled = true; showName = SETTINGS.PlayerHouseName; drawSelectBox = SETTINGS.PlayerHouseSelectBox
+            elseif target.Type == "Tree" and SETTINGS.TreeESP then
+                typeEnabled = true; showName = SETTINGS.TreeName; drawSelectBox = SETTINGS.TreeSelectBox
+            elseif target.Type == "Ore" and SETTINGS.OreESP then
+                typeEnabled = true; showName = SETTINGS.OreName; drawSelectBox = SETTINGS.OreSelectBox
+            elseif target.Type == "Vegetation" and SETTINGS.VegetationESP then
+                typeEnabled = true; showName = SETTINGS.VegetationName; drawSelectBox = SETTINGS.VegetationSelectBox
+            elseif target.Type == "Chest" and SETTINGS.ChestESP then
+                typeEnabled = true; showName = SETTINGS.ChestName; drawSelectBox = SETTINGS.ChestSelectBox
+            elseif target.Type == "DroppedItem" and SETTINGS.DroppedItemsESP then
+                typeEnabled = true; showName = SETTINGS.DroppedItemsName; drawSelectBox = SETTINGS.DroppedItemsSelectBox
+            elseif target.Type == "TreasureMarker" and SETTINGS.TreasureMarkerESP then
+                typeEnabled = true; showName = SETTINGS.TreasureMarkerName; drawSelectBox = SETTINGS.TreasureMarkerSelectBox
+            end
+
+            if not typeEnabled or not target.Part or not target.Part.Parent then
+                if CACHE[key] then CACHE[key]:Destroy(); CACHE[key] = nil end
+                if SELECTION_BOX_CACHE[key] then SELECTION_BOX_CACHE[key].Visible = false end
+                continue
+            end
+
+            local dist = math.floor((Camera.CFrame.Position - target.Part.Position).Magnitude)
+            local inRange = dist <= SETTINGS.MaxDistance
+
+            if inRange and showName then
+                local text = target.Prefix .. " [" .. dist .. "m]"
+                if not CACHE[key] then
+                    CACHE[key] = CreateESP(target.Part, text, target.Color)
+                else
+                    local lbl = CACHE[key]:FindFirstChildOfClass("TextLabel")
+                    if lbl then lbl.Text = text; lbl.TextColor3 = target.Color end
+                    CACHE[key].Enabled = true
+                end
+            else
+                if CACHE[key] then CACHE[key].Enabled = false end
+            end
+
+            if inRange and drawSelectBox then
+                local adornee = target.Model or target.Part
+                if not SELECTION_BOX_CACHE[key] then
+                    SELECTION_BOX_CACHE[key] = CreateSelectionBox(adornee, target.Color)
+                else
+                    UpdateSelectionBox(SELECTION_BOX_CACHE[key], target.Color)
+                    SELECTION_BOX_CACHE[key].Adornee = adornee
+                end
+            else
+                if SELECTION_BOX_CACHE[key] then SELECTION_BOX_CACHE[key].Visible = false end
+            end
+        end
+    end
+
+    -- AIMBOT
+    if SETTINGS.AimbotEnabled then
+        -- Rysowanie FOV
+        if FOVCircle then
+            FOVCircle.Radius = SETTINGS.AimbotFOV
+            FOVCircle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+            FOVCircle.Visible = true
+            if SETTINGS.AimbotMouseFOV then
+                local mousePos = UserInputService:GetMouseLocation()
+                FOVCircle.Position = Vector2.new(mousePos.X, mousePos.Y)
+            end
+            FOVCircle.Color = LockedTarget and Color3.fromRGB(255, 70, 70) or Color3.fromRGB(255, 255, 255)
+        end
+
+        if AimbotRunning then
+            -- Logika wyboru celu
+            if SETTINGS.AimbotStickyAim and LockedTarget then
+                local char = LockedTarget.Character
+                if char and char.Parent then
+                    if CheckTeam(LockedTarget) or not CheckAlive(char) or CheckWall(char) then
+                        CancelLock()
+                    else
+                        local aimPart = GetAimPart(char)
+                        if aimPart then
+                            local screenPos, onScreen = Camera:WorldToScreenPoint(aimPart.Position)
+                            if not onScreen then
+                                CancelLock()
+                            else
+                                local pos = Vector2.new(screenPos.X, screenPos.Y)
+                                local screenCenter = SETTINGS.AimbotMouseFOV and Vector2.new(UserInputService:GetMouseLocation().X, UserInputService:GetMouseLocation().Y) or Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+                                if (pos - screenCenter).Magnitude > SETTINGS.AimbotFOV then
+                                    CancelLock()
+                                else
+                                    AimAt(aimPart)
+                                end
+                            end
+                        else
+                            CancelLock()
+                        end
+                    end
+                else
+                    CancelLock()
+                end
+            end
+
+            if not SETTINGS.AimbotStickyAim or not LockedTarget then
+                local targetPlayer, targetPart = GetClosestPlayer()
+                if targetPlayer and targetPart then
+                    LockedTarget = targetPlayer
+                    AimAt(targetPart)
+                else
+                    CancelLock()
+                end
+            end
+        else
+            CancelLock()
+            RestoreCamera()
+        end
+    else
+        if FOVCircle then FOVCircle.Visible = false end
+        CancelLock()
+        RestoreCamera()
+    end
+end)
+
+UserInputService.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then
+        if SETTINGS.AimbotEnabled then
+            if SETTINGS.AimbotToggle then
+                AimbotRunning = not AimbotRunning
+                if not AimbotRunning then RestoreCamera() end
+            else
+                AimbotRunning = true
+            end
+        end
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then
+        if not SETTINGS.AimbotToggle then
+            AimbotRunning = false
+            CancelLock()
+            RestoreCamera()
+        end
+    end
+end)
+
+-------------------------------------------------
+-- WINDUI + ICONS
+-------------------------------------------------
+
+print("[ESP] Loading libraries...")
+local Icons = loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/Icons/main/Main-v2.lua"))()
+local WindUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"))()
+
+print("[ESP] Libraries loaded, creating window...")
+
+local Window = WindUI:CreateWindow({
+    Title = "Universal ESP + Aimbot",
+    Icon = "eye",
+    Folder = "UniversalESP",
+    Size = UDim2.fromOffset(580, 550),
+    MinSize = Vector2.new(560, 400),
+    MaxSize = Vector2.new(850, 700),
+    ToggleKey = Enum.KeyCode.LeftAlt,
+    Resizable = true,
+    Theme = "Dark"
+})
+
+local function Notify(title, text, duration)
+    WindUI:Notify({ Title = title, Content = text, Duration = duration or 5, Icon = "check" })
+end
+
+-------------------------------------------------
+-- KONFIGURACJA
+-------------------------------------------------
+
+local function SaveConfig()
+    pcall(function()
+        if writefile then
+            makefolder("UniversalESP")
+            local data = {}
+            for k, v in pairs(SETTINGS) do
+                if type(v) == "Color3" then data[k] = {v.R, v.G, v.B}
+                else data[k] = v end
+            end
+            data.MenuKey = tostring(Window.ToggleKey)
+            writefile("UniversalESP/ESPConfig.json", game:GetService("HttpService"):JSONEncode(data))
+        end
+    end)
+end
+
+local function LoadConfig()
+    pcall(function()
+        if readfile then
+            local raw = readfile("UniversalESP/ESPConfig.json")
+            local data = game:GetService("HttpService"):JSONDecode(raw)
+            for k, v in pairs(data) do
+                if k == "ESPColor" or k:find("Color") then
+                    if type(v) == "table" and #v == 3 then SETTINGS[k] = Color3.new(v[1], v[2], v[3]) end
+                elseif k == "MenuKey" then
+                    local ok, key = pcall(function() return Enum.KeyCode[v] end)
+                    if ok and key then Window:SetToggleKey(key) end
+                elseif SETTINGS[k] ~= nil then SETTINGS[k] = v end
+            end
+        end
+    end)
+end
+
+LoadConfig()
+
+-------------------------------------------------
+-- UI
+-------------------------------------------------
+
+local ESPTab = Window:Tab({ Title = "ESP", Icon = "eye" })
+
+local MainSection = ESPTab:Section({ Title = "Główne" })
+MainSection:Toggle({
+    Title = "Włącz ESP",
+    Value = SETTINGS.Enabled,
+    Callback = function(v) SETTINGS.Enabled = v; if not v then ClearESP() end; SaveConfig() end
+})
+MainSection:Slider({
+    Title = "Zasięg (m)",
+    Value = { Min = 100, Max = 5000, Default = SETTINGS.MaxDistance },
+    Step = 100,
+    Callback = function(v) SETTINGS.MaxDistance = v; SaveConfig() end
+})
+MainSection:Colorpicker({
+    Title = "Kolor ESP (gracze)",
+    Default = SETTINGS.ESPColor,
+    Callback = function(c) SETTINGS.ESPColor = c; SaveConfig() end
+})
+MainSection:Button({ Title = "Wyczyść Cache", Callback = ClearESP })
+MainSection:Slider({
+    Title = "Grubość linii Select Box",
+    Value = { Min = 0.01, Max = 1, Default = SETTINGS.SelectBoxLineThickness },
+    Step = 0.01,
+    Callback = function(v) SETTINGS.SelectBoxLineThickness = v; SaveConfig() end
+})
+MainSection:Slider({
+    Title = "Transparentność Select Box",
+    Value = { Min = 0, Max = 1, Default = SETTINGS.SelectBoxSurfaceTransp },
+    Step = 0.05,
+    Callback = function(v) SETTINGS.SelectBoxSurfaceTransp = v; SaveConfig() end
+})
+
+local TypeSection = ESPTab:Section({ Title = "Typy ESP" })
+
+local function AddCategory(category, prefix)
+    local mainFlag = prefix .. "ESP"
+    local nameFlag = prefix .. "Name"
+    local selectFlag = prefix .. "SelectBox"
+
+    local mainToggle = TypeSection:Toggle({
+        Title = category,
+        Value = SETTINGS[mainFlag],
+        Callback = function(v)
+            SETTINGS[mainFlag] = v; SaveConfig()
+            nameToggle:SetVisible(v)
+            selectToggle:SetVisible(v)
+        end
+    })
+    local nameToggle = TypeSection:Toggle({
+        Title = "   Nazwa",
+        Value = SETTINGS[nameFlag],
+        Visible = SETTINGS[mainFlag],
+        Callback = function(v) SETTINGS[nameFlag] = v; SaveConfig() end
+    })
+    local selectToggle = TypeSection:Toggle({
+        Title = "   Select Box (3D)",
+        Value = SETTINGS[selectFlag],
+        Visible = SETTINGS[mainFlag],
+        Callback = function(v) SETTINGS[selectFlag] = v; SaveConfig() end
+    })
+end
+
+AddCategory("Gracze", "Player")
+AddCategory("Zwierzęta", "Animal")
+AddCategory("NPC Bounty", "NPCHuman")
+AddCategory("Domy graczy", "PlayerHouse")
+AddCategory("Drzewa", "Tree")
+AddCategory("Rudy", "Ore")
+AddCategory("Roślinność", "Vegetation")
+AddCategory("Skrzynie", "Chest")
+AddCategory("Porzucone przedmioty", "DroppedItems")
+AddCategory("Znaczniki skarbów", "TreasureMarker")
+
+-- Zakładka Aimbot
+local AimbotTab = Window:Tab({ Title = "Aimbot", Icon = "crosshair" })
+local AimbotSection = AimbotTab:Section({ Title = "Ustawienia Aimbota" })
+
+AimbotSection:Toggle({
+    Title = "Włącz Aimbot",
+    Value = SETTINGS.AimbotEnabled,
+    Callback = function(v) SETTINGS.AimbotEnabled = v; if not v then RestoreCamera() end; SaveConfig() end
+})
+AimbotSection:Slider({
+    Title = "FOV (promień)",
+    Value = { Min = 50, Max = 500, Default = SETTINGS.AimbotFOV },
+    Step = 10,
+    Callback = function(v) SETTINGS.AimbotFOV = v; SaveConfig() end
+})
+AimbotSection:Dropdown({
+    Title = "Metoda celowania",
+    Values = { "Camera", "Mouse" },
+    Value = SETTINGS.AimbotMethod or "Camera",
+    Callback = function(v)
+        SETTINGS.AimbotMethod = v
+        if v == "Camera" then
+            SETTINGS.AimbotThirdPerson = false
+            SETTINGS.AimbotOverrideCamera = true
+        else
+            SETTINGS.AimbotThirdPerson = true
+            SETTINGS.AimbotOverrideCamera = false
+        end
+        SaveConfig()
+    end
+})
+AimbotSection:Dropdown({
+    Title = "Cel",
+    Values = { "Głowa", "Środek" },
+    Value = SETTINGS.AimbotTargetPart == "Head" and "Głowa" or "Środek",
+    Callback = function(v)
+        SETTINGS.AimbotTargetPart = v == "Głowa" and "Head" or "HumanoidRootPart"
+        SaveConfig()
+    end
+})
+AimbotSection:Slider({
+    Title = "Płynność kamery (0.01 - 1)",
+    Value = { Min = 0.01, Max = 1, Default = SETTINGS.AimbotSmoothing },
+    Step = 0.01,
+    Callback = function(v) SETTINGS.AimbotSmoothing = v; SaveConfig() end
+})
+AimbotSection:Slider({
+    Title = "Czułość myszy (tylko Mouse)",
+    Value = { Min = 0.1, Max = 10, Default = SETTINGS.AimbotThirdPersonSens },
+    Step = 0.1,
+    Callback = function(v) SETTINGS.AimbotThirdPersonSens = v; SaveConfig() end
+})
+AimbotSection:Toggle({
+    Title = "Predykcja ruchu",
+    Value = SETTINGS.AimbotPrediction,
+    Callback = function(v) SETTINGS.AimbotPrediction = v; SaveConfig() end
+})
+AimbotSection:Slider({
+    Title = "Siła predykcji",
+    Value = { Min = 0, Max = 0.2, Default = SETTINGS.AimbotPredictionStr },
+    Step = 0.001,
+    Callback = function(v) SETTINGS.AimbotPredictionStr = v; SaveConfig() end
+})
+AimbotSection:Toggle({
+    Title = "Team Check",
+    Value = SETTINGS.AimbotTeamCheck,
+    Callback = function(v) SETTINGS.AimbotTeamCheck = v; SaveConfig() end
+})
+AimbotSection:Toggle({
+    Title = "Alive Check",
+    Value = SETTINGS.AimbotAliveCheck,
+    Callback = function(v) SETTINGS.AimbotAliveCheck = v; SaveConfig() end
+})
+AimbotSection:Toggle({
+    Title = "Wall Check",
+    Value = SETTINGS.AimbotWallCheck,
+    Callback = function(v) SETTINGS.AimbotWallCheck = v; SaveConfig() end
+})
+AimbotSection:Toggle({
+    Title = "Sticky Aim",
+    Value = SETTINGS.AimbotStickyAim,
+    Callback = function(v) SETTINGS.AimbotStickyAim = v; SaveConfig() end
+})
+AimbotSection:Toggle({
+    Title = "Wymuś kontrolę kamery",
+    Value = SETTINGS.AimbotOverrideCamera,
+    Callback = function(v) SETTINGS.AimbotOverrideCamera = v; SaveConfig() end
+})
+AimbotSection:Toggle({
+    Title = "Toggle (zamiast przytrzymywania)",
+    Value = SETTINGS.AimbotToggle,
+    Callback = function(v) SETTINGS.AimbotToggle = v; SaveConfig() end
+})
+
+-- Ustawienia
+local SettingsTab = Window:Tab({ Title = "Ustawienia", Icon = "settings" })
+local UISection = SettingsTab:Section({ Title = "UI" })
+UISection:Colorpicker({
+    Title = "Kolor akcentu",
+    Default = Color3.fromRGB(0, 120, 255),
+    Callback = function(c) WindUI:SetAccentColor(c) end
+})
+UISection:Dropdown({
+    Title = "Motyw",
+    Values = { "Default", "Dark Green", "Dark Blue", "Purple Rose", "Skeet" },
+    Value = "Default",
+    Callback = function(t) WindUI:SetTheme(t) end
+})
+UISection:Keybind({
+    Title = "Klawisz menu",
+    Value = tostring(Window.ToggleKey):match("%.(.+)") or "LeftAlt",
+    Callback = function(v) Window:SetToggleKey(Enum.KeyCode[v]); SaveConfig() end
+})
+UISection:Button({
+    Title = "Zniszcz Menu (Unload)",
+    Callback = function()
+        SETTINGS.Enabled = false; SETTINGS.AimbotEnabled = false; ClearESP(); CancelLock(); RestoreCamera()
+        if RenderLoop then RenderLoop:Disconnect() end
+        if ScannerLoop then task.cancel(ScannerLoop) end
+        if FOVCircle then FOVCircle:Remove() end
+        pcall(function() Window:Destroy() end)
+    end
+})
+
+print("[ESP] Script fully loaded.")
+Notify("Universal ESP + Aimbot", "Załadowano! Otwórz menu: LeftAlt", 5)
